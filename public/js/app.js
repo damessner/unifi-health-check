@@ -131,6 +131,10 @@ function switchTab(tabId) {
     targetPane.classList.add('active');
     activeTab = tabId;
     updateHeaderContext();
+    // Lazily load history when navigating to the history tab
+    if (tabId === 'history') {
+      fetchAndRenderHistory();
+    }
   }
 }
 
@@ -146,6 +150,10 @@ function updateHeaderContext() {
       title: 'Network Overview',
       subtitle: 'Real-time school wireless environment dashboard'
     },
+    speeds: {
+      title: 'Speed Monitor',
+      subtitle: 'Live download/upload rates, top clients, struggling devices log & capacity planning'
+    },
     channels: {
       title: 'RF Channel Analyzer',
       subtitle: 'Analysis of radio congestion and Co-Channel Interference (CCI)'
@@ -157,6 +165,10 @@ function updateHeaderContext() {
     ipads: {
       title: 'iPad Telemetry Diagnostics',
       subtitle: 'Real-time health monitoring of pupils\' iPads and Apple devices'
+    },
+    history: {
+      title: 'History & Trends',
+      subtitle: 'Trend analysis of channel utilization, client counts and network speeds over time'
     },
     optimizer: {
       title: 'SSID & RF Optimization Plan',
@@ -203,11 +215,17 @@ async function fetchData(isSilent = false, force = false) {
     
     // Process and render all segments
     renderOverview();
+    renderSpeedsTab();
     renderChannelsTab();
     renderApsTab();
     renderIpadsTab();
     updateGlobalBadges();
     renderOptimalGrid();
+    updateEventsLog();
+    // Refresh history charts if history tab is active
+    if (activeTab === 'history') {
+      fetchAndRenderHistory();
+    }
 
     // Verify backend connectivity health state
     updateControllerStatusCard(true);
@@ -826,7 +844,15 @@ function updateGlobalBadges() {
     }
   }
 
-  // 3. Optimization Step Indicator
+  // 3. Struggling clients badge on Speed Monitor
+  const badgeSpeeds = document.getElementById('badge-speeds-struggling');
+  if (badgeSpeeds && apiData.clients.strugglingAll) {
+    const n = apiData.clients.strugglingAll.length;
+    badgeSpeeds.textContent = n;
+    badgeSpeeds.style.display = n > 0 ? 'inline-block' : 'none';
+  }
+
+  // 4. Optimization Step Indicator
   const badgeAction = document.getElementById('badge-action-alert');
   if (badgeAction) {
     if (apiData.channels.recommendations.length > 0) {
@@ -1220,3 +1246,770 @@ function renderOptimalGrid() {
     window.lucide.createIcons();
   }
 }
+
+// ============================================================
+//  SPEED MONITOR TAB
+// ============================================================
+
+/**
+ * Format kbps value into a human-readable Mbps string.
+ */
+function kbpsToMbps(kbps) {
+  if (kbps >= 1000000) return `${(kbps / 1000000).toFixed(1)} Gbps`;
+  if (kbps >= 1000) return `${(kbps / 1000).toFixed(0)} Mbps`;
+  return `${kbps} kbps`;
+}
+
+/**
+ * Set the CSS conic-gradient gauge needle on a .speed-gauge element.
+ */
+function setGauge(gaugeEl, pct, color) {
+  if (!gaugeEl) return;
+  const safe = Math.min(100, Math.max(0, pct));
+  const deg = safe * 3.6;
+  gaugeEl.style.background = `conic-gradient(${color} ${deg}deg, rgba(255,255,255,0.05) ${deg}deg)`;
+}
+
+/**
+ * Render the Speed Monitor tab.
+ */
+function renderSpeedsTab() {
+  if (!apiData) return;
+
+  const cl = apiData.clients;
+  const sum = cl.summary;
+
+  // Speed gauge values (cap at 2000 Mbps for gauge scale)
+  const dlMbps = Math.round(sum.totalDownloadKbps / 1000);
+  const ulMbps = Math.round(sum.totalUploadKbps / 1000);
+  const dlPct = Math.min(100, (dlMbps / 2000) * 100);
+  const ulPct = Math.min(100, (ulMbps / 2000) * 100);
+  const dlColor = dlPct > 80 ? '#EF4444' : dlPct > 50 ? '#F59E0B' : '#10B981';
+  const ulColor = ulPct > 80 ? '#EF4444' : ulPct > 50 ? '#F59E0B' : '#818CF8';
+
+  setGauge(document.getElementById('gauge-download'), dlPct, dlColor);
+  setGauge(document.getElementById('gauge-upload'), ulPct, ulColor);
+
+  const dlVal = document.getElementById('speed-dl-val');
+  const ulVal = document.getElementById('speed-ul-val');
+  if (dlVal) dlVal.textContent = dlMbps >= 1000 ? `${(dlMbps / 1000).toFixed(1)}G` : dlMbps;
+  if (ulVal) ulVal.textContent = ulMbps >= 1000 ? `${(ulMbps / 1000).toFixed(1)}G` : ulMbps;
+
+  const dlUnit = document.querySelector('#gauge-download .gauge-unit');
+  const ulUnit = document.querySelector('#gauge-upload .gauge-unit');
+  if (dlUnit) dlUnit.textContent = dlMbps >= 1000 ? 'Gbps' : 'Mbps';
+  if (ulUnit) ulUnit.textContent = ulMbps >= 1000 ? 'Gbps' : 'Mbps';
+
+  const dlSub = document.getElementById('speed-dl-sub');
+  const ulSub = document.getElementById('speed-ul-sub');
+  if (dlSub) dlSub.textContent = `Aggregate AP → Client TX rate`;
+  if (ulSub) ulSub.textContent = `Aggregate Client → AP RX rate`;
+
+  // All clients count
+  const clientCount = document.getElementById('speed-client-count');
+  if (clientCount) clientCount.textContent = sum.totalAllClients;
+  const avgDlEl = document.getElementById('speed-avg-dl');
+  if (avgDlEl) {
+    const avg = sum.totalAllClients > 0 ? Math.round(sum.totalDownloadKbps / sum.totalAllClients / 1000) : 0;
+    avgDlEl.textContent = `Avg: ${avg} Mbps/client DL`;
+  }
+
+  // Capacity count
+  const capCountEl = document.getElementById('capacity-count');
+  if (capCountEl) {
+    capCountEl.innerHTML = `${sum.totalAllClients}<span style="font-size:0.45em; color:var(--text-dark)">&nbsp;/ 800</span>`;
+  }
+  const capReadinessEl = document.getElementById('capacity-readiness-label');
+  if (capReadinessEl) {
+    const pctFull = Math.round((sum.totalAllClients / 800) * 100);
+    capReadinessEl.textContent = `${pctFull}% capacity utilized`;
+    capReadinessEl.style.color = pctFull > 80 ? 'var(--color-danger)' : pctFull > 50 ? 'var(--color-warning)' : 'var(--color-success)';
+  }
+
+  // Top Downloaders table
+  renderTopDownloadersTable();
+
+  // Per-AP throughput chart
+  renderApThroughputChart();
+
+  // Capacity planning widget
+  renderCapacityWidget();
+}
+
+/**
+ * Render the Top Downloaders table
+ */
+function renderTopDownloadersTable() {
+  const tbody = document.getElementById('top-downloaders-body');
+  if (!tbody || !apiData || !apiData.clients.topDownloaders) return;
+
+  tbody.innerHTML = '';
+  apiData.clients.topDownloaders.forEach((c, i) => {
+    const dlFormatted = kbpsToMbps(c.txRateKbps);
+    const ulFormatted = kbpsToMbps(c.rxRateKbps);
+    const signalColor = c.signal < -80 ? 'var(--color-danger)' : c.signal < -70 ? 'var(--color-warning)' : 'var(--color-success)';
+    const severityBadge = `<span class="health-status-badge ${c.severity}">${c.severity}</span>`;
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td style="color:var(--text-dark); font-weight:600; text-align:center;">${i + 1}</td>
+      <td>
+        <div style="font-weight:600; color:white;">${escapeHtml(c.hostname)}</div>
+        <div style="font-size:0.72rem; color:var(--text-dark); font-family:monospace;">${c.mac}</div>
+      </td>
+      <td style="color:var(--text-muted); font-size:0.82rem;">${escapeHtml(c.apName)}</td>
+      <td>
+        <strong style="color:var(--primary-light);">${c.band}</strong>
+        <span style="display:block; font-size:0.72rem; color:var(--text-dark);">Ch ${c.channel}</span>
+      </td>
+      <td><strong style="color:#34D399; font-size:0.95rem;">↓ ${dlFormatted}</strong></td>
+      <td><strong style="color:#818CF8; font-size:0.95rem;">↑ ${ulFormatted}</strong></td>
+      <td><strong style="color:${signalColor};">${c.signal} dBm</strong></td>
+      <td>${severityBadge}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  if (window.lucide) window.lucide.createIcons();
+}
+
+/**
+ * Render per-AP throughput horizontal bar chart
+ */
+function renderApThroughputChart() {
+  const container = document.getElementById('ap-throughput-chart');
+  if (!container || !apiData || !apiData.clients.allClients) return;
+
+  // Aggregate by AP
+  const apData = {};
+  apiData.clients.allClients.forEach(c => {
+    const key = c.apName || 'Unknown AP';
+    if (!apData[key]) apData[key] = { dl: 0, ul: 0, count: 0 };
+    apData[key].dl += c.txRateKbps;
+    apData[key].ul += c.rxRateKbps;
+    apData[key].count++;
+  });
+
+  const entries = Object.entries(apData).sort((a, b) => b[1].dl - a[1].dl);
+  if (entries.length === 0) {
+    container.innerHTML = '<p class="text-muted" style="padding:20px;">No client data available.</p>';
+    return;
+  }
+
+  const maxDl = Math.max(...entries.map(e => e[1].dl), 1);
+
+  container.innerHTML = '';
+  entries.forEach(([apName, data]) => {
+    const dlPct = Math.round((data.dl / maxDl) * 100);
+    const ulPct = Math.round((data.ul / maxDl) * 100);
+    const row = document.createElement('div');
+    row.className = 'ap-throughput-row';
+    row.innerHTML = `
+      <div class="ap-tp-label">
+        <span class="ap-tp-name">${escapeHtml(apName)}</span>
+        <span class="ap-tp-count">${data.count} client${data.count !== 1 ? 's' : ''}</span>
+      </div>
+      <div class="ap-tp-bars">
+        <div class="ap-tp-bar-wrap">
+          <div class="ap-tp-bar dl-bar" style="width:${dlPct}%; min-width:2px;"></div>
+          <span class="ap-tp-bar-val">↓ ${kbpsToMbps(data.dl)}</span>
+        </div>
+        <div class="ap-tp-bar-wrap">
+          <div class="ap-tp-bar ul-bar" style="width:${ulPct}%; min-width:2px;"></div>
+          <span class="ap-tp-bar-val">↑ ${kbpsToMbps(data.ul)}</span>
+        </div>
+      </div>
+    `;
+    container.appendChild(row);
+  });
+}
+
+/**
+ * Render the Capacity Planning readiness checklist widget
+ */
+function renderCapacityWidget() {
+  const container = document.getElementById('capacity-widget');
+  if (!container || !apiData) return;
+
+  const ch = apiData.channels.summary;
+  const cl = apiData.clients.summary;
+
+  const numAPs = ch.totalAPs;
+  const expectedClients = 800;
+  const perAP = numAPs > 0 ? Math.round(expectedClients / numAPs) : 0;
+
+  const checks = [
+    {
+      label: 'AP Deployment Density',
+      detail: `${numAPs} APs → ${perAP} clients/AP expected (target: ≤ 30/AP)`,
+      pass: numAPs > 0 && perAP <= 30,
+      warn: numAPs > 0 && perAP > 30 && perAP <= 40
+    },
+    {
+      label: '5 GHz Channel Diversity',
+      detail: (() => {
+        const ch40 = ch.channelCounts5['40'] || 0;
+        const ch44 = ch.channelCounts5['44'] || 0;
+        const total5 = ch.totalRadios5 || 1;
+        const stacked = Math.round(((ch40 + ch44) / total5) * 100);
+        return `${stacked}% of 5 GHz APs on channels 40/44 (target: < 30% per channel)`;
+      })(),
+      pass: (() => {
+        const ch40 = ch.channelCounts5['40'] || 0;
+        const ch44 = ch.channelCounts5['44'] || 0;
+        const total5 = ch.totalRadios5 || 1;
+        return ((ch40 + ch44) / total5) < 0.3;
+      })(),
+      warn: false
+    },
+    {
+      label: '5 GHz Average Channel Utilization',
+      detail: `Current: ${ch.avgUtil5}% (target: < 60%; at 800 clients it will be much higher)`,
+      pass: ch.avgUtil5 < 60,
+      warn: ch.avgUtil5 >= 60 && ch.avgUtil5 < 75
+    },
+    {
+      label: '2.4 GHz Average Channel Utilization',
+      detail: `Current: ${ch.avgUtil24}% (target: < 50%)`,
+      pass: ch.avgUtil24 < 50,
+      warn: ch.avgUtil24 >= 50 && ch.avgUtil24 < 65
+    },
+    {
+      label: 'DFS Channel Availability',
+      detail: (() => {
+        const dfsChs = ['52','56','60','64','100','104','108','112','116','120','124','128','132','136','140','144'];
+        const dfsInUse = dfsChs.filter(c => (ch.channelCounts5[c] || 0) > 0).length;
+        return dfsInUse > 0
+          ? `${dfsInUse} DFS channels in use — spectrum expanded`
+          : 'No DFS channels active. Only 2 usable non-DFS 5 GHz channels available.';
+      })(),
+      pass: (() => {
+        const dfsChs = ['52','56','60','64','100','104','108','112','116'];
+        return dfsChs.some(c => (ch.channelCounts5[c] || 0) > 0);
+      })(),
+      warn: false
+    },
+    {
+      label: 'Critical Client Issues',
+      detail: `${cl.criticalCount} critical + ${cl.warningCount} warning clients currently (target: 0 critical)`,
+      pass: cl.criticalCount === 0,
+      warn: cl.criticalCount === 0 && cl.warningCount > 0
+    }
+  ];
+
+  const passCount = checks.filter(c => c.pass).length;
+  const readinessPct = Math.round((passCount / checks.length) * 100);
+  const readinessColor = readinessPct >= 80 ? '#10B981' : readinessPct >= 50 ? '#F59E0B' : '#EF4444';
+  const readinessLabel = readinessPct >= 80 ? '✅ READY' : readinessPct >= 50 ? '⚠️ MARGINAL' : '❌ NOT READY';
+
+  let html = `
+    <div class="capacity-header">
+      <div class="capacity-score" style="color:${readinessColor}; border-color:${readinessColor};">${readinessPct}%</div>
+      <div>
+        <h3 style="color:${readinessColor}; margin:0 0 4px;">Network Readiness: ${readinessLabel}</h3>
+        <p class="text-muted" style="margin:0; font-size:0.85rem;">${passCount} of ${checks.length} readiness checks passed</p>
+      </div>
+    </div>
+    <div class="capacity-checklist">
+  `;
+
+  checks.forEach(c => {
+    const icon = c.pass ? '✔' : c.warn ? '⚠' : '✖';
+    const cls = c.pass ? 'cap-pass' : c.warn ? 'cap-warn' : 'cap-fail';
+    html += `
+      <div class="cap-check-item ${cls}">
+        <span class="cap-icon">${icon}</span>
+        <div>
+          <strong>${c.label}</strong>
+          <p>${c.detail}</p>
+        </div>
+      </div>
+    `;
+  });
+
+  html += `</div>`;
+
+  if (readinessPct < 80) {
+    html += `
+      <div class="capacity-action-note">
+        <i data-lucide="alert-triangle"></i>
+        <p><strong>Action required before the event:</strong> Execute the <a onclick="switchTab('optimizer')" href="#" style="color:var(--primary-light);">Optimization Plan</a> immediately to resolve channel stacking and improve readiness.</p>
+      </div>
+    `;
+  }
+
+  container.innerHTML = html;
+  if (window.lucide) window.lucide.createIcons();
+}
+
+// ============================================================
+//  STRUGGLING CLIENTS EVENT LOG
+// ============================================================
+
+const EVENTS_LOG_KEY = 'unifi_events_log';
+const EVENTS_LOG_MAX = 200;
+
+/**
+ * Read events log from localStorage
+ */
+function readEventsLog() {
+  try {
+    const raw = localStorage.getItem(EVENTS_LOG_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+/**
+ * Write events log to localStorage
+ */
+function writeEventsLog(entries) {
+  try {
+    localStorage.setItem(EVENTS_LOG_KEY, JSON.stringify(entries));
+  } catch (e) {
+    console.warn('Could not persist events log:', e);
+  }
+}
+
+/**
+ * Compare current struggling clients against previous set and log new / resolved events.
+ */
+function updateEventsLog() {
+  if (!apiData || !apiData.clients.strugglingAll) return;
+
+  const entries = readEventsLog();
+  const now = new Date().toISOString();
+
+  apiData.clients.strugglingAll.forEach(c => {
+    // Only add an entry if this client isn't already the latest entry in the log
+    const lastEntry = entries.filter(e => e.mac === c.mac).pop();
+    if (!lastEntry || lastEntry.severity !== c.severity) {
+      entries.push({
+        time: now,
+        mac: c.mac,
+        hostname: c.hostname,
+        severity: c.severity,
+        flags: c.flags,
+        apName: c.apName,
+        signal: c.signal,
+        band: c.band
+      });
+    }
+  });
+
+  // Keep only the most recent entries
+  const trimmed = entries.slice(-EVENTS_LOG_MAX);
+  writeEventsLog(trimmed);
+
+  renderEventsLog();
+}
+
+/**
+ * Render the events log in the Speed Monitor tab
+ */
+function renderEventsLog() {
+  const container = document.getElementById('events-log');
+  if (!container) return;
+
+  const entries = readEventsLog();
+  if (entries.length === 0) {
+    container.innerHTML = `
+      <div class="log-empty-state">
+        <i data-lucide="check-circle-2"></i>
+        <p>No struggling clients detected. Log will populate when issues arise.</p>
+      </div>
+    `;
+    if (window.lucide) window.lucide.createIcons();
+    return;
+  }
+
+  // Show newest entries first
+  const reversed = [...entries].reverse();
+  container.innerHTML = reversed.map(e => {
+    const timeStr = new Date(e.time).toLocaleTimeString();
+    const dateStr = new Date(e.time).toLocaleDateString();
+    const iconCls = e.severity === 'critical' ? 'text-critical' : 'text-warning';
+    const icon = e.severity === 'critical' ? '🔴' : '🟡';
+    const flagStr = (e.flags || []).join(', ') || 'Unknown issue';
+    return `
+      <div class="log-entry ${e.severity}">
+        <div class="log-entry-icon">${icon}</div>
+        <div class="log-entry-body">
+          <div class="log-entry-title">${escapeHtml(e.hostname)}</div>
+          <div class="log-entry-meta">
+            <span class="log-tag">${e.severity.toUpperCase()}</span>
+            <span>${flagStr}</span>
+            <span style="color:var(--text-dark);">via ${escapeHtml(e.apName || 'Unknown AP')}</span>
+          </div>
+        </div>
+        <div class="log-entry-time">${timeStr}<br><span style="font-size:0.65rem; opacity:0.6;">${dateStr}</span></div>
+      </div>
+    `;
+  }).join('');
+}
+
+/**
+ * Clear the events log from localStorage and re-render
+ */
+function clearEventsLog() {
+  if (confirm('Clear the struggling clients event log?')) {
+    localStorage.removeItem(EVENTS_LOG_KEY);
+    renderEventsLog();
+  }
+}
+
+// ============================================================
+//  CSV EXPORT
+// ============================================================
+
+/**
+ * Export all clients as a CSV file download
+ */
+function exportClientsCSV() {
+  if (!apiData || !apiData.clients.allClients) {
+    alert('No client data available to export. Please fetch data first.');
+    return;
+  }
+
+  const rows = [
+    ['Hostname', 'MAC', 'IP', 'OUI', 'AP Name', 'Band', 'Channel', 'Signal (dBm)', 'Satisfaction (%)', 'TX Rate (kbps)', 'RX Rate (kbps)', 'TX Retries (%)', 'Uptime (s)', 'Severity', 'Flags']
+  ];
+
+  apiData.clients.allClients.forEach(c => {
+    rows.push([
+      c.hostname,
+      c.mac,
+      c.ip,
+      c.oui,
+      c.apName,
+      c.band,
+      c.channel,
+      c.signal,
+      c.satisfaction,
+      c.txRateKbps,
+      c.rxRateKbps,
+      c.txRetriesPct,
+      c.uptime,
+      c.severity,
+      (c.flags || []).join('; ')
+    ]);
+  });
+
+  const csvContent = rows.map(r =>
+    r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')
+  ).join('\n');
+
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `unifi-clients-${new Date().toISOString().slice(0, 19).replace(/[:]/g, '-')}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+// ============================================================
+//  HISTORY & TRENDS TAB
+// ============================================================
+
+// Chart.js instances (kept in module scope for re-use / destroy)
+let chartUtilization = null;
+let chartClients = null;
+let chartSpeeds = null;
+
+/**
+ * Fetch history from the backend and render the history tab
+ */
+async function fetchAndRenderHistory() {
+  try {
+    const res = await fetch('/api/history');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.success && data.samples) {
+      renderHistoryTab(data.samples);
+    }
+  } catch (err) {
+    console.error('[History] Failed to load history:', err);
+  }
+}
+
+/**
+ * Chart.js global defaults for dark theme
+ */
+function applyChartDefaults() {
+  if (!window.Chart) return;
+  Chart.defaults.color = 'rgba(255,255,255,0.55)';
+  Chart.defaults.borderColor = 'rgba(255,255,255,0.07)';
+  Chart.defaults.plugins.legend.labels.color = 'rgba(255,255,255,0.7)';
+}
+
+/**
+ * Render the History & Trends tab from an array of historical samples
+ * @param {Array} samples
+ */
+function renderHistoryTab(samples) {
+  if (!window.Chart) {
+    console.warn('[History] Chart.js not loaded yet.');
+    return;
+  }
+
+  applyChartDefaults();
+
+  // Sample count display
+  const countEl = document.getElementById('history-sample-count');
+  if (countEl) countEl.textContent = samples.length;
+
+  const labels = samples.map(s => {
+    const d = new Date(s.timestamp);
+    return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
+  });
+
+  const chartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { position: 'top' },
+      tooltip: {
+        backgroundColor: 'rgba(17, 24, 39, 0.95)',
+        borderColor: 'rgba(255,255,255,0.1)',
+        borderWidth: 1
+      }
+    },
+    scales: {
+      x: {
+        ticks: { color: 'rgba(255,255,255,0.45)', maxRotation: 45 },
+        grid: { color: 'rgba(255,255,255,0.05)' }
+      },
+      y: {
+        ticks: { color: 'rgba(255,255,255,0.45)' },
+        grid: { color: 'rgba(255,255,255,0.05)' }
+      }
+    }
+  };
+
+  // 1. Utilization Trend Chart
+  const ctxUtil = document.getElementById('chart-utilization');
+  if (ctxUtil) {
+    if (chartUtilization) chartUtilization.destroy();
+    chartUtilization = new Chart(ctxUtil, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: '2.4 GHz Util %',
+            data: samples.map(s => s.avgUtil24),
+            borderColor: '#F59E0B',
+            backgroundColor: 'rgba(245, 158, 11, 0.1)',
+            fill: true,
+            tension: 0.3,
+            pointRadius: 3
+          },
+          {
+            label: '5 GHz Util %',
+            data: samples.map(s => s.avgUtil5),
+            borderColor: '#EF4444',
+            backgroundColor: 'rgba(239, 68, 68, 0.1)',
+            fill: true,
+            tension: 0.3,
+            pointRadius: 3
+          }
+        ]
+      },
+      options: {
+        ...chartOptions,
+        scales: {
+          ...chartOptions.scales,
+          y: { ...chartOptions.scales.y, min: 0, max: 100, title: { display: true, text: 'Utilization %', color: 'rgba(255,255,255,0.45)' } }
+        }
+      }
+    });
+  }
+
+  // 2. Client Count Trend Chart
+  const ctxClients = document.getElementById('chart-clients');
+  if (ctxClients) {
+    if (chartClients) chartClients.destroy();
+    chartClients = new Chart(ctxClients, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'All Clients',
+            data: samples.map(s => s.totalAllClients),
+            borderColor: '#818CF8',
+            backgroundColor: 'rgba(129, 140, 248, 0.1)',
+            fill: true,
+            tension: 0.3,
+            pointRadius: 3
+          },
+          {
+            label: 'Apple Clients',
+            data: samples.map(s => s.totalAppleClients),
+            borderColor: '#34D399',
+            backgroundColor: 'rgba(52, 211, 153, 0.1)',
+            fill: false,
+            tension: 0.3,
+            pointRadius: 3
+          },
+          {
+            label: 'Critical Clients',
+            data: samples.map(s => s.criticalCount),
+            borderColor: '#EF4444',
+            backgroundColor: 'rgba(239, 68, 68, 0)',
+            fill: false,
+            tension: 0.3,
+            pointRadius: 3,
+            borderDash: [4, 4]
+          }
+        ]
+      },
+      options: chartOptions
+    });
+  }
+
+  // 3. Speed Trend Chart
+  const ctxSpeeds = document.getElementById('chart-speeds');
+  if (ctxSpeeds) {
+    if (chartSpeeds) chartSpeeds.destroy();
+    chartSpeeds = new Chart(ctxSpeeds, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Download (Mbps)',
+            data: samples.map(s => s.totalDownloadMbps),
+            borderColor: '#34D399',
+            backgroundColor: 'rgba(52, 211, 153, 0.1)',
+            fill: true,
+            tension: 0.3,
+            pointRadius: 3
+          },
+          {
+            label: 'Upload (Mbps)',
+            data: samples.map(s => s.totalUploadMbps),
+            borderColor: '#818CF8',
+            backgroundColor: 'rgba(129, 140, 248, 0.1)',
+            fill: true,
+            tension: 0.3,
+            pointRadius: 3
+          }
+        ]
+      },
+      options: {
+        ...chartOptions,
+        scales: {
+          ...chartOptions.scales,
+          y: { ...chartOptions.scales.y, title: { display: true, text: 'Mbps', color: 'rgba(255,255,255,0.45)' } }
+        }
+      }
+    });
+  }
+
+  // 4. History table (last 20 entries, newest first)
+  const historyBody = document.getElementById('history-table-body');
+  if (historyBody) {
+    historyBody.innerHTML = '';
+    [...samples].reverse().slice(0, 20).forEach(s => {
+      const ts = new Date(s.timestamp).toLocaleTimeString();
+      const tr = document.createElement('tr');
+      const util24Color = s.avgUtil24 > 70 ? 'var(--color-danger)' : s.avgUtil24 > 50 ? 'var(--color-warning)' : 'var(--color-success)';
+      const util5Color = s.avgUtil5 > 70 ? 'var(--color-danger)' : s.avgUtil5 > 50 ? 'var(--color-warning)' : 'var(--color-success)';
+      tr.innerHTML = `
+        <td style="font-family:monospace; color:var(--text-muted); font-size:0.82rem;">${ts}</td>
+        <td style="font-weight:600;">${s.totalAllClients}</td>
+        <td>${s.totalAppleClients}</td>
+        <td><strong style="color:${util24Color};">${s.avgUtil24}%</strong></td>
+        <td><strong style="color:${util5Color};">${s.avgUtil5}%</strong></td>
+        <td style="color:#34D399;">↓ ${s.totalDownloadMbps}</td>
+        <td style="color:#818CF8;">↑ ${s.totalUploadMbps}</td>
+        <td style="color:${s.criticalCount > 0 ? 'var(--color-danger)' : 'var(--text-dark)'}; font-weight:600;">${s.criticalCount}</td>
+        <td style="color:${s.warningCount > 0 ? 'var(--color-warning)' : 'var(--text-dark)'};">${s.warningCount}</td>
+      `;
+      historyBody.appendChild(tr);
+    });
+  }
+}
+
+/**
+ * Clear server-side history is not possible from the client, but clear localStorage sample cache.
+ * Notify user.
+ */
+function clearHistory() {
+  if (confirm('Clear the displayed history charts? (Server-side buffer persists until server restart.)')) {
+    // Destroy existing charts so they re-initialize empty
+    if (chartUtilization) { chartUtilization.destroy(); chartUtilization = null; }
+    if (chartClients) { chartClients.destroy(); chartClients = null; }
+    if (chartSpeeds) { chartSpeeds.destroy(); chartSpeeds = null; }
+
+    const historyBody = document.getElementById('history-table-body');
+    if (historyBody) historyBody.innerHTML = '';
+    const countEl = document.getElementById('history-sample-count');
+    if (countEl) countEl.textContent = '0';
+  }
+}
+
+// ============================================================
+//  AUTO-REFRESH
+// ============================================================
+
+let autoRefreshTimer = null;
+let autoRefreshCountdown = 0;
+let autoRefreshInterval = 0;
+
+/**
+ * Set or disable the auto-refresh interval.
+ * @param {string|number} seconds
+ */
+function setAutoRefresh(seconds) {
+  const secs = parseInt(seconds, 10);
+
+  // Clear any existing timer
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
+  }
+
+  autoRefreshInterval = secs;
+  autoRefreshCountdown = secs;
+
+  const syncLabel = document.getElementById('sync-mode-text');
+  const syncWrap = document.getElementById('sync-mode-label');
+
+  if (secs <= 0) {
+    if (syncLabel) syncLabel.textContent = 'Manual Sync Only';
+    if (syncWrap) {
+      syncWrap.style.color = '#f59e0b';
+      syncWrap.style.borderColor = 'rgba(245, 158, 11, 0.2)';
+      syncWrap.style.background = 'rgba(245, 158, 11, 0.05)';
+    }
+    return;
+  }
+
+  if (syncWrap) {
+    syncWrap.style.color = '#10B981';
+    syncWrap.style.borderColor = 'rgba(16, 185, 129, 0.3)';
+    syncWrap.style.background = 'rgba(16, 185, 129, 0.05)';
+  }
+
+  const updateCountdown = () => {
+    if (syncLabel) syncLabel.textContent = `Auto-refresh in ${autoRefreshCountdown}s`;
+    autoRefreshCountdown--;
+    if (autoRefreshCountdown < 0) {
+      autoRefreshCountdown = autoRefreshInterval;
+      fetchData(true, true);
+    }
+  };
+
+  updateCountdown();
+  autoRefreshTimer = setInterval(updateCountdown, 1000);
+
+  // Restore interval selector value in case it got out of sync
+  const sel = document.getElementById('auto-refresh-interval');
+  if (sel) sel.value = String(secs);
+}
+
