@@ -27,10 +27,10 @@ for (const name of requiredVars) {
   }
 }
 
-if (!isMockMode) {
+if (!isMockMode && process.env.UNIFI_URL && process.env.UNIFI_URL.trim()) {
   try {
     const parsed = new URL(process.env.UNIFI_URL);
-    if (parsed.protocol !== 'https:') {
+    if (parsed.protocol !== 'https:' || !parsed.hostname) {
       throw new Error('UNIFI_URL must use https://');
     }
   } catch (error) {

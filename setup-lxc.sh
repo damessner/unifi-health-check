@@ -7,7 +7,7 @@
 #
 # Safer execution:
 #   curl -fsSLo /tmp/setup-lxc.sh https://raw.githubusercontent.com/damessner/unifi-health-check/main/setup-lxc.sh
-#   chmod 700 /tmp/setup-lxc.sh
+#   chmod 755 /tmp/setup-lxc.sh
 #   bash /tmp/setup-lxc.sh
 # =========================================================================
 
@@ -56,7 +56,7 @@ fi
 NON_INTERACTIVE=false
 if [ ! -t 0 ] || [ "$DEBIAN_FRONTEND" = "noninteractive" ]; then
     NON_INTERACTIVE=true
-    log_info "Running in non-interactive mode. Required values must be supplied via environment variables."
+    log_info "Running in non-interactive mode. Set UNIFI_URL, UNIFI_USER, UNIFI_PASS, and API_KEY before running."
 fi
 
 # 3. Check and Install Prerequisite: Curl
@@ -141,6 +141,7 @@ else
         local prompt="$1"
         local default="$2"
         local var_name="$3"
+        local required="${4:-false}"
         local val
         
         if [ "$NON_INTERACTIVE" = "true" ]; then
@@ -148,22 +149,31 @@ else
             return
         fi
         
-        echo -ne "${BOLD}${CYAN}$prompt${NC} [Default: ${GREEN}$default${NC}]: "
-        read -r val
-        if [ -z "$val" ]; then
-            declare -g "$var_name"="$default"
-        else
-            declare -g "$var_name"="$val"
-        fi
+        while true; do
+            echo -ne "${BOLD}${CYAN}$prompt${NC} [Default: ${GREEN}$default${NC}]: "
+            read -r val
+            if [ -z "$val" ]; then
+                declare -g "$var_name"="$default"
+            else
+                declare -g "$var_name"="$val"
+            fi
+
+            if [ "$required" = "true" ] && [ -z "${!var_name}" ]; then
+                log_warning "$prompt is required and cannot be empty."
+                continue
+            fi
+
+            break
+        done
     }
     
     echo -e "\n${BOLD}${MAGENTA}--- Configuration Wizard ---${NC}"
     echo -e "Press [Enter] to keep the default values.\n"
     
-    prompt_var "UniFi Controller URL    " "https://controller.example.internal:8443" "CONF_URL"
-    prompt_var "UniFi Username          " "" "CONF_USER"
-    prompt_var "UniFi Password          " "" "CONF_PASS"
-    prompt_var "API Key (for /api access)" "" "CONF_API_KEY"
+    prompt_var "UniFi Controller URL    " "https://controller.example.internal:8443" "CONF_URL" "true"
+    prompt_var "UniFi Username          " "" "CONF_USER" "true"
+    prompt_var "UniFi Password          " "" "CONF_PASS" "true"
+    prompt_var "API Key (for /api access)" "" "CONF_API_KEY" "true"
     prompt_var "UniFi Site Name         " "default" "CONF_SITE"
     prompt_var "Dashboard External Port " "3843" "CONF_HOST_PORT"
     
@@ -192,6 +202,7 @@ UNIFI_PASS=$CONF_PASS
 UNIFI_SITE=$CONF_SITE
 API_KEY=$CONF_API_KEY
 API_AUTH_ENABLED=true
+TRUST_PROXY=false
 RATE_LIMIT_WINDOW_SEC=60
 RATE_LIMIT_MAX_REQUESTS=60
 FORCE_REFRESH_MIN_INTERVAL_SEC=30

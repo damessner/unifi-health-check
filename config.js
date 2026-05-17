@@ -34,7 +34,7 @@ function resolveUnifiEndpoint() {
 
   return {
     host: parsed.hostname,
-    port: parsed.port ? parseInt(parsed.port, 10) : 443
+    port: parsed.port !== '' ? parseInt(parsed.port, 10) : 443
   };
 }
 
@@ -64,6 +64,7 @@ module.exports = {
     authEnabled,
     apiKey: apiKey.trim(),
     rateLimitWindowMs: parseIntWithDefault(process.env.RATE_LIMIT_WINDOW_SEC, 60) * 1000,
-    rateLimitMaxRequests: parseIntWithDefault(process.env.RATE_LIMIT_MAX_REQUESTS, 60)
+    rateLimitMaxRequests: parseIntWithDefault(process.env.RATE_LIMIT_MAX_REQUESTS, 60),
+    trustProxy: process.env.TRUST_PROXY === 'true'
   }
 };

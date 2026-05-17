@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const path = require('path');
 const config = require('./config');
 const unifiClient = require('./services/unifiClient');
@@ -6,6 +7,7 @@ const analyzer = require('./services/analyzer');
 
 const app = express();
 const PORT = config.server.port;
+app.set('trust proxy', config.api.trustProxy);
 
 // Serve static assets from public folder
 app.use(express.static(path.join(__dirname, 'public')));
@@ -28,11 +30,18 @@ const apiRequestWindow = new Map();
 let lastForceRefreshAt = 0;
 
 function getClientIdentifier(req) {
-  const forwardedFor = req.headers['x-forwarded-for'];
-  if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
-    return forwardedFor.split(',')[0].trim();
-  }
-  return req.socket.remoteAddress || 'unknown-client';
+  return req.ip || req.socket.remoteAddress || 'unknown-client';
+}
+
+function secureCompareStrings(a, b) {
+  const left = Buffer.from(a, 'utf8');
+  const right = Buffer.from(b, 'utf8');
+  const maxLength = Math.max(left.length, right.length);
+  const leftPadded = Buffer.alloc(maxLength);
+  const rightPadded = Buffer.alloc(maxLength);
+  left.copy(leftPadded);
+  right.copy(rightPadded);
+  return crypto.timingSafeEqual(leftPadded, rightPadded) && left.length === right.length;
 }
 
 function requireApiKey(req, res, next) {
@@ -40,8 +49,8 @@ function requireApiKey(req, res, next) {
     return next();
   }
 
-  const provided = req.get('x-api-key');
-  if (!provided || provided !== config.api.apiKey) {
+  const providedApiKey = req.get('x-api-key');
+  if (!providedApiKey || !secureCompareStrings(providedApiKey, config.api.apiKey)) {
     return res.status(401).json({
       success: false,
       error: 'Unauthorized'
@@ -55,6 +64,15 @@ function applyRateLimit(req, res, next) {
   const now = Date.now();
   const clientId = getClientIdentifier(req);
   const windowStart = now - config.api.rateLimitWindowMs;
+  for (const [trackedClient, timestamps] of apiRequestWindow.entries()) {
+    const kept = timestamps.filter((ts) => ts > windowStart);
+    if (kept.length === 0) {
+      apiRequestWindow.delete(trackedClient);
+    } else {
+      apiRequestWindow.set(trackedClient, kept);
+    }
+  }
+
   const recent = (apiRequestWindow.get(clientId) || []).filter((ts) => ts > windowStart);
   recent.push(now);
   apiRequestWindow.set(clientId, recent);

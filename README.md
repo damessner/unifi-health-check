@@ -16,7 +16,7 @@ Avoid `curl | bash` direct execution. Download, inspect, and then run:
 
 ```bash
 curl -fsSLo /tmp/setup-lxc.sh https://raw.githubusercontent.com/damessner/unifi-health-check/main/setup-lxc.sh
-chmod 700 /tmp/setup-lxc.sh
+chmod 755 /tmp/setup-lxc.sh
 less /tmp/setup-lxc.sh
 bash /tmp/setup-lxc.sh
 ```
@@ -68,11 +68,12 @@ The application is configured using a `.env` file located in the root of the pro
 | Variable | Example Value | Description |
 |---|---|---|
 | `UNIFI_URL` | `https://controller.example.internal:8443` | Full HTTPS URL for your UniFi Controller API endpoint. |
-| `UNIFI_USER` | `changeme` | UniFi API username (provide securely; do not commit real values). |
-| `UNIFI_PASS` | `changeme` | UniFi API password (provide securely; do not commit real values). |
+| `UNIFI_USER` | `__REQUIRED__` | UniFi API username (provide securely; do not commit real values). |
+| `UNIFI_PASS` | `__REQUIRED__` | UniFi API password (provide securely; do not commit real values). |
 | `UNIFI_SITE` | `default` | UniFi Site Name/ID (typically `default`). |
-| `API_KEY` | `changeme` | Required API key for all `/api/*` endpoints (pass in `X-API-Key` header). |
+| `API_KEY` | `__REQUIRED__` | Required API key for all `/api/*` endpoints (pass in `X-API-Key` header). |
 | `API_AUTH_ENABLED` | `true` | Keep API protection enabled in production. |
+| `TRUST_PROXY` | `false` | Set to `true` only behind a trusted reverse proxy. |
 | `RATE_LIMIT_WINDOW_SEC` | `60` | API rate limit rolling window length in seconds. |
 | `RATE_LIMIT_MAX_REQUESTS` | `60` | Maximum API calls allowed per client per window. |
 | `FORCE_REFRESH_MIN_INTERVAL_SEC` | `30` | Minimum interval between `?force=true` requests to prevent abuse. |

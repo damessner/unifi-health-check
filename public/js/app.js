@@ -57,26 +57,58 @@ const CLIENT_SATISFACTION_CRITICAL_THRESHOLD = 70;
 const CLIENT_SATISFACTION_WARNING_THRESHOLD = 85;
 const MAX_CASCADE_LOG_ENTRIES = 12;
 const MAX_CLIENT_CASCADE_LOG_ENTRIES = 8;
-const API_KEY_STORAGE_KEY = 'unifi_api_key';
+let runtimeApiKey = '';
 
-function getApiKeyFromStorage() {
-  const stored = localStorage.getItem(API_KEY_STORAGE_KEY);
-  if (stored && stored.trim()) {
-    return stored.trim();
+function requestApiKeyFromUser() {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.72);display:flex;align-items:center;justify-content:center;z-index:99999;';
+
+    const panel = document.createElement('div');
+    panel.style.cssText = 'background:#111827;padding:20px;border-radius:12px;width:min(420px,90vw);color:#fff;font-family:inherit;box-shadow:0 8px 24px rgba(0,0,0,0.45);';
+    panel.innerHTML = `
+      <h3 style="margin:0 0 10px;">API Authentication Required</h3>
+      <p style="margin:0 0 12px;color:#cbd5e1;">Enter your dashboard API key.</p>
+      <input id="api-key-input" type="password" autocomplete="off" style="width:100%;padding:10px;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#fff;" />
+      <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end;">
+        <button id="api-key-cancel" style="padding:8px 12px;border-radius:8px;border:1px solid #64748b;background:transparent;color:#e2e8f0;cursor:pointer;">Cancel</button>
+        <button id="api-key-submit" style="padding:8px 12px;border-radius:8px;border:none;background:#3b82f6;color:#fff;cursor:pointer;">Continue</button>
+      </div>
+    `;
+
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+
+    const input = panel.querySelector('#api-key-input');
+    const submit = panel.querySelector('#api-key-submit');
+    const cancel = panel.querySelector('#api-key-cancel');
+
+    const close = (value) => {
+      overlay.remove();
+      resolve(value || '');
+    };
+
+    submit.addEventListener('click', () => close(input.value.trim()));
+    cancel.addEventListener('click', () => close(''));
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') close(input.value.trim());
+      if (event.key === 'Escape') close('');
+    });
+    setTimeout(() => input.focus(), 0);
+  });
+}
+
+async function getApiKeyForSession() {
+  if (runtimeApiKey) {
+    return runtimeApiKey;
   }
 
-  const entered = window.prompt('Enter API key for this dashboard session:');
-  if (entered && entered.trim()) {
-    const sanitized = entered.trim();
-    localStorage.setItem(API_KEY_STORAGE_KEY, sanitized);
-    return sanitized;
-  }
-
-  return '';
+  runtimeApiKey = await requestApiKeyFromUser();
+  return runtimeApiKey;
 }
 
 async function secureApiFetch(url) {
-  const apiKey = getApiKeyFromStorage();
+  const apiKey = await getApiKeyForSession();
   if (!apiKey) {
     throw new Error('API key is required to call backend endpoints.');
   }
@@ -88,7 +120,7 @@ async function secureApiFetch(url) {
   });
 
   if (res.status === 401) {
-    localStorage.removeItem(API_KEY_STORAGE_KEY);
+    runtimeApiKey = '';
     throw new Error('Unauthorized. Please re-enter a valid API key.');
   }
 
