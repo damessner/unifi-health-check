@@ -1,0 +1,22 @@
+{
+  "name": "unifi-health-check",
+  "version": "1.0.0",
+  "description": "UniFi Network Health Check & Channel Utilization Analyzer",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "unifi",
+    "network",
+    "analyzer",
+    "wifi",
+    "diagnostics"
+  ],
+  "author": "Antigravity",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  }
+}
