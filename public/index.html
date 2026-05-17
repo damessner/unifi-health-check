@@ -97,6 +97,18 @@
         </div>
         <div class="header-actions">
           <span class="last-updated-text" id="last-updated">Last updated: Just now</span>
+<<<<<<< Updated upstream
+=======
+          <div class="sandbox-toggle-wrap" id="sandbox-toggle-container">
+            <span class="sandbox-toggle-label">
+              <i data-lucide="flask-conical"></i> Interactive Sandbox
+            </span>
+            <label class="switch">
+              <input type="checkbox" id="sandbox-toggle" onchange="toggleSandboxMode(this.checked)">
+              <span class="slider"></span>
+            </label>
+          </div>
+>>>>>>> Stashed changes
           <span id="sync-mode-label" class="sync-mode-disclaimer" style="font-size:0.75rem; color:#f59e0b; background:rgba(245, 158, 11, 0.05); padding:4px 10px; border-radius:12px; border:1px dashed rgba(245, 158, 11, 0.2); display:inline-flex; align-items:center; gap:6px; margin-right:8px;"><i data-lucide="info" style="width:12px; height:12px;"></i><span id="sync-mode-text">Manual Sync Only</span></span>
           <button class="btn-refresh" id="refresh-button" onclick="fetchData(false, true)">
             <i data-lucide="refresh-cw"></i>
@@ -680,6 +692,69 @@
           </div>
         </div>
 
+        <!-- NEIGHBORHOOD RF ADJACENCY & BUTTERFLY CASCADE SIMULATOR -->
+        <div class="sandbox-proximity-container no-print" id="sandbox-proximity-panel" style="display: none;">
+          <div class="glass-card proximity-graph-card">
+            <div class="card-header flex-header" style="margin-bottom:12px;">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <div class="header-icon bg-blue-alpha"><i data-lucide="network"></i></div>
+                <h3>Mittelschule Telfs — RF Neighborhood Proximity Map</h3>
+              </div>
+              <div style="display:flex; align-items:center; gap:10px;">
+                <button class="btn-refresh" style="font-size:0.75rem; padding:4px 10px; height:auto; border-radius:6px; background:rgba(239, 68, 68, 0.1); border-color:rgba(239, 68, 68, 0.2); color:#F87171;" onclick="resetSandboxOverrides()"><i data-lucide="trash-2" style="width:12px; height:12px; display:inline-block; vertical-align:middle; margin-right:4px;"></i>Reset Tuning</button>
+                <span class="count-badge bg-blue-alpha" style="font-size:0.75rem; font-weight:700; padding:4px 10px; border-radius:20px;">3D Adjacency View</span>
+              </div>
+            </div>
+            <div class="card-body">
+              <p class="mb-3 text-muted" style="font-size:0.82rem;">This graph models physical classroom locations at Mittelschule Telfs. Adjacent rooms share heavy horizontal RF bounds. Vertical boundaries indicate structural ceiling overlaps. Select a card to view active neighbors and co-channel interference hotspots.</p>
+              
+              <div class="school-floors-grid">
+                <!-- 2OG: Second Floor -->
+                <div class="floor-row">
+                  <div class="floor-lbl-badge">2. OG</div>
+                  <div class="floor-cards" id="floor-2og-cards">
+                    <!-- Programmatically populated AP graph cards -->
+                  </div>
+                </div>
+                
+                <!-- 1OG: First Floor -->
+                <div class="floor-row">
+                  <div class="floor-lbl-badge">1. OG</div>
+                  <div class="floor-cards" id="floor-1og-cards">
+                    <!-- Programmatically populated AP graph cards -->
+                  </div>
+                </div>
+                
+                <!-- EG: Ground Floor -->
+                <div class="floor-row">
+                  <div class="floor-lbl-badge">EG</div>
+                  <div class="floor-cards" id="floor-eg-cards">
+                    <!-- Programmatically populated AP graph cards -->
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <div class="glass-card cascade-stats-card">
+            <div class="card-header flex-header" style="margin-bottom:12px;">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <div class="header-icon bg-rose-alpha"><i data-lucide="wind"></i></div>
+                <h3>Butterfly Effect Live RF Cascade Log</h3>
+              </div>
+            </div>
+            <div class="card-body cascade-stats-wrap">
+              <p class="mb-2 text-muted" style="font-size:0.82rem;">Real-time updates showing how local tuning choices bleed through ceilings and walls to impact neighbor APs and conectado devices.</p>
+              <div class="cascade-list-container" id="cascade-log-list">
+                <div class="cascade-item info">
+                  <i data-lucide="info"></i>
+                  <span>Sandbox active. Toggle channel dropdowns below or click AP cards above to trigger live cascade logs.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Stacking Step Card -->
         <div class="optimization-step-card glass-card critical mb-4">
           <div class="step-badge bg-rose">Step 1: Emergency</div>
@@ -797,11 +872,13 @@
                   <th>AP Location & Name</th>
                   <th>Floor</th>
                   <th>Model</th>
+                  <th>Nearest RF Neighbors (Active Channels)</th>
                   <th>2.4GHz Channel (Current ➔ Opt)</th>
                   <th>2.4GHz Power (Current ➔ Opt)</th>
                   <th>5GHz Channel (Current ➔ Opt)</th>
                   <th>5GHz Power (Current ➔ Opt)</th>
                   <th>Min RSSI</th>
+                  <th>Butterfly Impact</th>
                   <th>Drift Audit</th>
                 </tr>
               </thead>
@@ -820,6 +897,9 @@
       
     </main>
   </div>
+
+  <!-- Floating Toast Notifications -->
+  <div id="toast-container"></div>
 
   <!-- Global Footer status script load -->
   <script src="js/app.js"></script>

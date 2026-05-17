@@ -5,6 +5,10 @@
 
 // Global State
 let apiData = null;
+let rawApiData = null;
+let sandboxModeEnabled = false;
+let sandboxOverrides = {};
+let selectedAPMac = null;
 let activeTab = 'overview';
 let searchQueryParams = {
   ap: '',
@@ -40,6 +44,40 @@ const DFS_CHANNELS_5GHZ = ['52','56','60','64','100','104','108','112','116','12
 // DOMContentLoaded Initialization
 document.addEventListener('DOMContentLoaded', () => {
   console.log('[App] Initializing dashboard UI elements...');
+  
+  // Initialize Sandbox Mode state from localStorage
+  try {
+    const savedEnabled = localStorage.getItem('unifi_sandbox_enabled');
+    sandboxModeEnabled = savedEnabled === 'true';
+    const savedOverrides = localStorage.getItem('unifi_sandbox_overrides');
+    if (savedOverrides) {
+      sandboxOverrides = JSON.parse(savedOverrides);
+    }
+  } catch (e) {
+    console.error('Error loading sandbox settings from localStorage:', e);
+  }
+
+  // Update toggle checkbox in UI
+  const toggle = document.getElementById('sandbox-toggle');
+  if (toggle) {
+    toggle.checked = sandboxModeEnabled;
+  }
+  const toggleWrap = document.querySelector('.sandbox-toggle-wrap');
+  if (toggleWrap && sandboxModeEnabled) {
+    toggleWrap.classList.add('active');
+  }
+  
+  // Toggle proximity panel display state based on active sandbox settings
+  const proximityPanel = document.getElementById('sandbox-proximity-panel');
+  if (proximityPanel) {
+    proximityPanel.style.display = sandboxModeEnabled ? 'grid' : 'none';
+  }
+  
+  // Set initial sync labels
+  const syncModeText = document.getElementById('sync-mode-text');
+  if (syncModeText) {
+    syncModeText.textContent = sandboxModeEnabled ? 'Sandbox Tuning Active' : 'Manual Sync Only';
+  }
   
   // Set initial page header text
   updateHeaderContext();
@@ -230,8 +268,15 @@ async function fetchData(isSilent = false, force = false) {
     const payload = await res.json();
     if (!payload.success) throw new Error(payload.error || 'Server returned negative status');
 
-    apiData = payload;
-    console.log('[API Fetch] Successfully fetched fresh telemetry!', apiData);
+    rawApiData = payload;
+    console.log('[API Fetch] Successfully fetched fresh telemetry!', rawApiData);
+    
+    // Process sandbox mapping or direct deep clone
+    if (sandboxModeEnabled) {
+      runRFPropagationEngine();
+    } else {
+      apiData = JSON.parse(JSON.stringify(rawApiData));
+    }
     
     // Process and render all segments
     renderOverview();
@@ -241,6 +286,10 @@ async function fetchData(isSilent = false, force = false) {
     renderIpadsTab();
     updateGlobalBadges();
     renderOptimalGrid();
+<<<<<<< Updated upstream
+=======
+    renderProximityMap();
+>>>>>>> Stashed changes
     updateEventsLog();
     // Refresh history charts if history tab is active
     if (activeTab === 'history') {
@@ -1183,16 +1232,46 @@ function renderOptimalGrid() {
     }
     totalAudits++;
 
-    const cell24Ch = r24 
-      ? `<span class="${isCh24Drift ? 'text-drift' : ''}">${curCh24} ➔ <strong>${optCh24}</strong></span>`
-      : '<span class="text-muted">Disabled</span>';
+    let cell24Ch, cell5Ch;
+    
+    if (sandboxModeEnabled) {
+      const ch24SelectOptions = [1, 6, 11].map(ch => 
+        `<option value="${ch}" ${curCh24 === ch ? 'selected' : ''}>Ch ${ch}</option>`
+      ).join('');
+      
+      const ch5SelectOptions = [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144].map(ch => 
+        `<option value="${ch}" ${curCh5 === ch ? 'selected' : ''}>Ch ${ch}</option>`
+      ).join('');
+      
+      cell24Ch = r24
+        ? `<div style="display:flex; align-items:center; gap:6px;">
+             <select class="sandbox-dropdown ${isCh24Drift ? 'changed' : ''}" onchange="changeSandboxChannel('${ap.mac}', 'ng', this.value)">
+               ${ch24SelectOptions}
+             </select>
+             <span>➔ <strong>${optCh24}</strong></span>
+           </div>`
+        : '<span class="text-muted">Disabled</span>';
+        
+      cell5Ch = r5
+        ? `<div style="display:flex; align-items:center; gap:6px;">
+             <select class="sandbox-dropdown ${isCh5Drift ? 'changed' : ''}" onchange="changeSandboxChannel('${ap.mac}', 'na', this.value)">
+               ${ch5SelectOptions}
+             </select>
+             <span>➔ <strong>${optCh5}</strong></span>
+           </div>`
+        : '<span class="text-muted">Disabled</span>';
+    } else {
+      cell24Ch = r24 
+        ? `<span class="${isCh24Drift ? 'text-drift' : ''}">${curCh24} ➔ <strong>${optCh24}</strong></span>`
+        : '<span class="text-muted">Disabled</span>';
+        
+      cell5Ch = r5
+        ? `<span class="${isCh5Drift ? 'text-drift' : ''}">${curCh5} ➔ <strong>${optCh5}</strong></span>`
+        : '<span class="text-muted">Disabled</span>';
+    }
 
     const cell24Power = r24
       ? `<span class="${isPower24Drift ? 'text-drift' : ''}">${r24.tx_power_mode === 'auto' ? 'Auto' : `${curPower24} dBm`} ➔ <strong>9 dBm (Low)</strong></span>`
-      : '<span class="text-muted">Disabled</span>';
-
-    const cell5Ch = r5
-      ? `<span class="${isCh5Drift ? 'text-drift' : ''}">${curCh5} ➔ <strong>${optCh5}</strong></span>`
       : '<span class="text-muted">Disabled</span>';
 
     const cell5Power = r5
@@ -2028,3 +2107,517 @@ function setAutoRefresh(seconds) {
   if (sel) sel.value = String(secs);
 }
 
+<<<<<<< Updated upstream
+=======
+// ============================================================
+//  RF NEIGHBORHOOD PROXIMITY GRAPH & INTERACTIVE SANDBOX ENGINE
+// ============================================================
+
+/**
+ * 3D Physical Adjacency and Structural Overlap mapping database for Mittelschule Telfs.
+ * Models EG (Ground Floor), 1OG (First Floor) and 2OG (Second Floor) physical adjacency grids.
+ */
+const AP_PROXIMITY_NEIGHBORS = {
+  'fc:ec:da:11:55:88': {
+    name: 'AP-EG-Lehrerzimmer',
+    floor: 'eg',
+    neighbors: [
+      'fc:ec:da:11:22:33', // Horizontal: Lehrerzimmer <-> 1a
+      'fc:ec:da:22:33:55'  // Diagonal: Lehrerzimmer <-> 2a
+    ]
+  },
+  'fc:ec:da:11:22:33': {
+    name: 'AP-EG-Klasse-1a',
+    floor: 'eg',
+    neighbors: [
+      'fc:ec:da:11:55:88', // Horizontal: 1a <-> Lehrerzimmer
+      'fc:ec:da:11:22:44', // Horizontal: 1a <-> 1b
+      'fc:ec:da:22:33:55'  // Vertical: 1a <-> 2a
+    ]
+  },
+  'fc:ec:da:11:22:44': {
+    name: 'AP-EG-Klasse-1b',
+    floor: 'eg',
+    neighbors: [
+      'fc:ec:da:11:22:33', // Horizontal: 1b <-> 1a
+      'fc:ec:da:22:33:66'  // Vertical: 1b <-> 2b
+    ]
+  },
+  'fc:ec:da:22:33:55': {
+    name: 'AP-1G-Klasse-2a',
+    floor: '1og',
+    neighbors: [
+      'fc:ec:da:22:33:66', // Horizontal: 2a <-> 2b
+      'fc:ec:da:11:22:33', // Vertical: 2a <-> 1a
+      'fc:ec:da:33:44:77', // Vertical: 2a <-> Physikraum
+      'fc:ec:da:11:55:88'  // Diagonal: 2a <-> Lehrerzimmer
+    ]
+  },
+  'fc:ec:da:22:33:66': {
+    name: 'AP-1G-Klasse-2b',
+    floor: '1og',
+    neighbors: [
+      'fc:ec:da:22:33:55', // Horizontal: 2b <-> 2a
+      'fc:ec:da:11:22:44'  // Vertical: 2b <-> 1b
+    ]
+  },
+  'fc:ec:da:33:44:77': {
+    name: 'AP-2G-Physikraum',
+    floor: '2og',
+    neighbors: [
+      'fc:ec:da:22:33:55'  // Vertical: Physikraum <-> 2a
+    ]
+  }
+};
+
+/**
+ * Recursive physical RF cascade and co-channel propagation engine.
+ * Computes channel bleed-through and mutual Airtime utilization load penalties
+ * and updates Apple client device satisfaction scores in real-time.
+ */
+function runRFPropagationEngine() {
+  if (!rawApiData) return;
+  
+  console.log('[RF Simulation] Executing cascade propagation math...');
+  
+  // 1. Deep clone raw apiData payload
+  apiData = JSON.parse(JSON.stringify(rawApiData));
+  
+  const cascadeLogs = [];
+  
+  // 2. Apply active inline dropdown override tunings
+  apiData.aps.forEach(ap => {
+    const override = sandboxOverrides[ap.mac];
+    if (override) {
+      if (override.ng !== undefined && ap.radios.ng) {
+        ap.radios.ng.channel = override.ng;
+      }
+      if (override.na !== undefined && ap.radios.na) {
+        ap.radios.na.channel = override.na;
+      }
+    }
+  });
+  
+  // Create lookup table
+  const mutatedAps = {};
+  apiData.aps.forEach(ap => {
+    mutatedAps[ap.mac] = ap;
+  });
+  
+  // 3. Reset all AP radio airtime load to baseline (self congestion)
+  apiData.aps.forEach(ap => {
+    const config = AP_PROXIMITY_NEIGHBORS[ap.mac];
+    if (!config) return;
+    
+    ['ng', 'na'].forEach(band => {
+      const radio = ap.radios[band];
+      if (!radio) return;
+      
+      const baselineLoad = Math.max(12, (radio.cu_self_rx || 0) + (radio.cu_self_tx || 0));
+      radio.cu_total = baselineLoad;
+      radio.cci_count = 0;
+    });
+  });
+  
+  // 4. Calculate mutual Co-Channel interference contention penalties
+  const checkedPairs = new Set();
+  
+  Object.keys(AP_PROXIMITY_NEIGHBORS).forEach(apMac1 => {
+    const config1 = AP_PROXIMITY_NEIGHBORS[apMac1];
+    const ap1 = mutatedAps[apMac1];
+    if (!ap1) return;
+    
+    config1.neighbors.forEach(apMac2 => {
+      const ap2 = mutatedAps[apMac2];
+      if (!ap2) return;
+      
+      const pairKey = [apMac1, apMac2].sort().join('-');
+      if (checkedPairs.has(pairKey)) return;
+      checkedPairs.add(pairKey);
+      
+      ['ng', 'na'].forEach(band => {
+        const r1 = ap1.radios[band];
+        const r2 = ap2.radios[band];
+        if (!r1 || !r2 || !r1.channel || !r2.channel) return;
+        
+        let overlaps = false;
+        if (band === 'ng') {
+          // 2.4 GHz: channels overlap if their absolute difference is <= 4
+          overlaps = Math.abs(r1.channel - r2.channel) <= 4;
+        } else {
+          // 5 GHz: channels overlap if they share the exact primary channel frequency
+          overlaps = r1.channel === r2.channel;
+        }
+        
+        if (overlaps) {
+          // Increment CCI counters
+          r1.cci_count = (r1.cci_count || 0) + 1;
+          r2.cci_count = (r2.cci_count || 0) + 1;
+          
+          // Apply mutual +18% airtime load penalty
+          r1.cu_total = Math.min(100, r1.cu_total + 18);
+          r2.cu_total = Math.min(100, r2.cu_total + 18);
+          
+          const bandLabel = band === 'ng' ? '2.4 GHz' : '5 GHz';
+          cascadeLogs.push({
+            type: 'conflict',
+            msg: `Overlap between adjacent rooms <strong>${ap1.name}</strong> and <strong>${ap2.name}</strong> (Ch ${r1.channel} / ${r2.channel}) on ${bandLabel}. Mutual <strong>+18%</strong> contention penalty applied!`
+          });
+        }
+      });
+    });
+  });
+  
+  // 5. Update connected client experience satisfaction metrics
+  let criticalClientsCount = 0;
+  let warningClientsCount = 0;
+  
+  const clientsList = apiData.clients.allClients || [];
+  clientsList.forEach(client => {
+    const parentAp = mutatedAps[client.apMac];
+    if (!parentAp) return;
+    
+    const band = client.band === '2.4G' ? 'ng' : 'na';
+    const radio = parentAp.radios[band];
+    if (!radio) return;
+    
+    client.channel = radio.channel;
+    
+    // Recalculate iPad Experience Satisfaction based on host AP load and tx_retries
+    const txRetriesPct = client.txRetriesPct || 5;
+    const clientSatisfaction = Math.max(10, Math.round(100 - radio.cu_total * 0.7 - txRetriesPct * 0.5));
+    client.satisfaction = clientSatisfaction;
+    
+    if (clientSatisfaction < 70) {
+      client.severity = 'critical';
+      client.warning = 'Severe AP Channel Utilization';
+      criticalClientsCount++;
+      
+      if (cascadeLogs.length < 8 && client.hostname.toLowerCase().includes('ipad')) {
+        cascadeLogs.push({
+          type: 'client',
+          msg: `Client <strong>${escapeHtml(client.hostname)}</strong> on <strong>${escapeHtml(parentAp.name)}</strong> satisfaction dropped to <span class="text-critical">${clientSatisfaction}%</span> due to congestion.`
+        });
+      }
+    } else if (clientSatisfaction < 85) {
+      client.severity = 'warning';
+      client.warning = 'Elevated Airtime Retries';
+      warningClientsCount++;
+    } else {
+      client.severity = 'success';
+      client.warning = '';
+    }
+  });
+  
+  // Synchronize clients in topDownloaders
+  if (apiData.clients.topDownloaders) {
+    apiData.clients.topDownloaders.forEach(client => {
+      const match = clientsList.find(c => c.mac === client.mac);
+      if (match) {
+        client.channel = match.channel;
+        client.satisfaction = match.satisfaction;
+        client.severity = match.severity;
+      }
+    });
+  }
+  
+  // 6. Recalculate global metrics and aggregates in apiData
+  let sumLoad24 = 0, count24 = 0;
+  let sumLoad5 = 0, count5 = 0;
+  let warningRadiosCount = 0;
+  let congestedRadiosCount = 0;
+  
+  apiData.aps.forEach(ap => {
+    if (ap.radios.ng) {
+      sumLoad24 += ap.radios.ng.cu_total;
+      count24++;
+      if (ap.radios.ng.cu_total > 70) congestedRadiosCount++;
+      else if (ap.radios.ng.cu_total > 50) warningRadiosCount++;
+    }
+    if (ap.radios.na) {
+      sumLoad5 += ap.radios.na.cu_total;
+      count5++;
+      if (ap.radios.na.cu_total > 70) congestedRadiosCount++;
+      else if (ap.radios.na.cu_total > 50) warningRadiosCount++;
+    }
+  });
+  
+  if (apiData.overview) {
+    apiData.overview.avgChannelLoad24 = Math.round(sumLoad24 / (count24 || 1));
+    apiData.overview.avgChannelLoad5 = Math.round(sumLoad5 / (count5 || 1));
+    apiData.overview.congestedRadiosCount = congestedRadiosCount;
+    apiData.overview.warningRadiosCount = warningRadiosCount;
+    
+    const appleClients = clientsList.filter(c => c.hostname.toLowerCase().includes('ipad'));
+    if (appleClients.length > 0) {
+      const avgHealth = Math.round(appleClients.reduce((acc, c) => acc + c.satisfaction, 0) / appleClients.length);
+      apiData.overview.avgIpadHealth = avgHealth;
+      apiData.overview.criticalCount = appleClients.filter(c => c.satisfaction < 70).length;
+      apiData.overview.warningCount = appleClients.filter(c => c.satisfaction >= 70 && c.satisfaction < 85).length;
+    }
+  }
+  
+  // Render cascade logs into the side panel
+  const cascadeLogList = document.getElementById('cascade-log-list');
+  if (cascadeLogList) {
+    if (cascadeLogs.length === 0) {
+      cascadeLogList.innerHTML = `
+        <div class="cascade-item info">
+          <i data-lucide="info"></i>
+          <span>No physical overlaps or active client degradation warnings. Your current RF channel tuning is structurally optimized!</span>
+        </div>
+      `;
+    } else {
+      cascadeLogList.innerHTML = cascadeLogs.map(log => {
+        let icon = 'info';
+        let itemClass = 'info';
+        if (log.type === 'conflict') {
+          icon = 'alert-triangle';
+          itemClass = 'conflict';
+        } else if (log.type === 'client') {
+          icon = 'smartphone';
+          itemClass = 'client';
+        }
+        return `
+          <div class="cascade-item ${itemClass}">
+            <i data-lucide="${icon}"></i>
+            <span>${log.msg}</span>
+          </div>
+        `;
+      }).join('');
+    }
+    
+    if (window.lucide) {
+      window.lucide.createIcons();
+    }
+  }
+}
+
+/**
+ * Handle channel selection changes in sandbox mode
+ */
+function changeSandboxChannel(apMac, radio, value) {
+  const numericValue = parseInt(value, 10);
+  if (!sandboxOverrides[apMac]) {
+    sandboxOverrides[apMac] = {};
+  }
+  sandboxOverrides[apMac][radio] = numericValue;
+  
+  localStorage.setItem('unifi_sandbox_overrides', JSON.stringify(sandboxOverrides));
+  
+  console.log(`[Sandbox Override] Set AP ${apMac} radio ${radio} to channel ${numericValue}`);
+  
+  // Re-run propagation and update all tabs
+  runRFPropagationEngine();
+  renderAllTabs();
+}
+
+/**
+ * Toggle sandbox mode state
+ */
+function toggleSandboxMode(enabled) {
+  sandboxModeEnabled = enabled;
+  localStorage.setItem('unifi_sandbox_enabled', String(enabled));
+  
+  const proximityPanel = document.getElementById('sandbox-proximity-panel');
+  if (proximityPanel) {
+    proximityPanel.style.display = enabled ? 'grid' : 'none';
+  }
+  
+  const toggleWrap = document.querySelector('.sandbox-toggle-wrap');
+  if (toggleWrap) {
+    if (enabled) {
+      toggleWrap.classList.add('active');
+    } else {
+      toggleWrap.classList.remove('active');
+    }
+  }
+  
+  const syncModeText = document.getElementById('sync-mode-text');
+  if (syncModeText) {
+    syncModeText.textContent = enabled ? 'Sandbox Tuning Active' : 'Manual Sync Only';
+  }
+  
+  if (enabled) {
+    runRFPropagationEngine();
+  } else {
+    if (rawApiData) {
+      apiData = JSON.parse(JSON.stringify(rawApiData));
+    }
+    const cascadeLogList = document.getElementById('cascade-log-list');
+    if (cascadeLogList) {
+      cascadeLogList.innerHTML = `
+        <div class="cascade-item info">
+          <i data-lucide="info"></i>
+          <span>Sandbox disabled. Telemetry and grids now reflect live UniFi hardware controller state.</span>
+        </div>
+      `;
+    }
+  }
+  
+  renderAllTabs();
+}
+
+/**
+ * Reset all manual sandbox overrides back to original controller configurations
+ */
+function resetSandboxOverrides() {
+  sandboxOverrides = {};
+  localStorage.removeItem('unifi_sandbox_overrides');
+  selectedAPMac = null;
+  
+  console.log('[Sandbox Reset] Cleared all custom channel tuning overrides!');
+  
+  if (sandboxModeEnabled) {
+    runRFPropagationEngine();
+  } else {
+    if (rawApiData) {
+      apiData = JSON.parse(JSON.stringify(rawApiData));
+    }
+  }
+  
+  renderAllTabs();
+}
+
+/**
+ * Select/focus an AP inside the physical proximity map
+ */
+function selectAPInProximityMap(apMac) {
+  if (selectedAPMac === apMac) {
+    selectedAPMac = null; // Deselect on secondary click
+  } else {
+    selectedAPMac = apMac;
+  }
+  renderProximityMap();
+}
+
+/**
+ * Render the interactive classroom-floor physical layout map
+ */
+function renderProximityMap() {
+  const floors = {
+    '2og': document.getElementById('floor-2og-cards'),
+    '1og': document.getElementById('floor-1og-cards'),
+    'eg': document.getElementById('floor-eg-cards')
+  };
+  
+  Object.values(floors).forEach(el => {
+    if (el) el.innerHTML = '';
+  });
+  
+  if (!apiData || !apiData.aps) return;
+  
+  const apMap = {};
+  apiData.aps.forEach(ap => {
+    apMap[ap.mac] = ap;
+  });
+  
+  apiData.aps.forEach(ap => {
+    const config = AP_PROXIMITY_NEIGHBORS[ap.mac];
+    if (!config) return; // Only render APs registered at Mittelschule Telfs
+    
+    const floorEl = floors[config.floor];
+    if (!floorEl) return;
+    
+    const ngCh = ap.radios.ng ? ap.radios.ng.channel : 'N/A';
+    const naCh = ap.radios.na ? ap.radios.na.channel : 'N/A';
+    
+    let maxCu = 0;
+    if (ap.radios.ng) maxCu = Math.max(maxCu, ap.radios.ng.cu_total);
+    if (ap.radios.na) maxCu = Math.max(maxCu, ap.radios.na.cu_total);
+    
+    let indicatorClass = 'green';
+    if (maxCu > 70) indicatorClass = 'red';
+    else if (maxCu > 50) indicatorClass = 'orange';
+    
+    let cardClass = '';
+    let isNgConflict = false;
+    let isNaConflict = false;
+    
+    if (selectedAPMac) {
+      if (ap.mac === selectedAPMac) {
+        cardClass = 'selected';
+      } else if (config.neighbors.includes(selectedAPMac)) {
+        const selAp = apMap[selectedAPMac];
+        if (selAp) {
+          if (ap.radios.ng && selAp.radios.ng) {
+            isNgConflict = Math.abs(ap.radios.ng.channel - selAp.radios.ng.channel) <= 4;
+          }
+          if (ap.radios.na && selAp.radios.na) {
+            isNaConflict = ap.radios.na.channel === selAp.radios.na.channel;
+          }
+        }
+        cardClass = (isNgConflict || isNaConflict) ? 'conflict' : 'neighbor';
+      }
+    } else {
+      config.neighbors.forEach(neighMac => {
+        const neighAp = apMap[neighMac];
+        if (neighAp) {
+          if (ap.radios.ng && neighAp.radios.ng) {
+            if (Math.abs(ap.radios.ng.channel - neighAp.radios.ng.channel) <= 4) {
+              isNgConflict = true;
+            }
+          }
+          if (ap.radios.na && neighAp.radios.na) {
+            if (ap.radios.na.channel === neighAp.radios.na.channel) {
+              isNaConflict = true;
+            }
+          }
+        }
+      });
+      if (isNgConflict || isNaConflict) {
+        cardClass = 'conflict';
+      }
+    }
+    
+    const card = document.createElement('div');
+    card.className = `ap-graph-card ${cardClass}`;
+    card.setAttribute('onclick', `selectAPInProximityMap('${ap.mac}')`);
+    card.innerHTML = `
+      <div class="ap-graph-header">
+        <span class="ap-graph-name">${escapeHtml(ap.name)}</span>
+        <span class="ap-graph-indicator ${indicatorClass}"></span>
+      </div>
+      <div class="ap-graph-bands">
+        <div class="ap-band-row">
+          <span class="ap-band-label">2.4G:</span>
+          <span class="ap-band-ch ${isNgConflict ? 'conflict-text' : ''}">Ch ${ngCh}</span>
+        </div>
+        <div class="ap-band-row">
+          <span class="ap-band-label">5G:</span>
+          <span class="ap-band-ch ${isNaConflict ? 'conflict-text' : ''}">Ch ${naCh}</span>
+        </div>
+      </div>
+    `;
+    floorEl.appendChild(card);
+  });
+  
+  if (window.lucide) {
+    window.lucide.createIcons();
+  }
+}
+
+/**
+ * Re-render all dashboard panels and components
+ */
+function renderAllTabs() {
+  renderOverview();
+  renderSpeedsTab();
+  renderChannelsTab();
+  renderApsTab();
+  renderIpadsTab();
+  updateGlobalBadges();
+  renderOptimalGrid();
+  renderProximityMap();
+  updateEventsLog();
+  
+  if (activeTab === 'history') {
+    fetchAndRenderHistory();
+  }
+  
+  if (window.lucide) {
+    window.lucide.createIcons();
+  }
+}
+
+>>>>>>> Stashed changes

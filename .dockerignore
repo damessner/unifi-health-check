@@ -1,0 +1,30 @@
+# Dependency directories
+node_modules/
+
+# Local environment files & secrets
+.env
+.env.*
+.env.local
+
+# Git metadata
+.git/
+.gitignore
+
+# Docker/LXC files themselves
+Dockerfile
+docker-compose.yml
+.dockerignore
+setup-lxc.sh
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Project zips and download directories
+unifi-health-check-main/
+unifi-health-check-main.zip

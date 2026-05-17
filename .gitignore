@@ -28,3 +28,6 @@ Desktop.ini
 *.njsproj
 *.sln
 *.sw?
+
+# Local script utility
+delete-repos.ps1
