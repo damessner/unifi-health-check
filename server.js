@@ -11,6 +11,9 @@ const PORT = config.server.port;
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 
+/** Threshold in ms below which a data fetch is considered 'fresh from the controller' */
+const FRESH_DATA_THRESHOLD_MS = 2000;
+
 // In-memory cache for UniFi data to ensure high-speed dashboard responsiveness
 const cache = {
   devices: null,
@@ -116,7 +119,7 @@ app.get('/api/diagnostics', async (req, res) => {
     const clientAnalysis = analyzer.analyzeClients(clients, devices);
 
     // Only push to history when data is fresh from the controller (not served from cache)
-    if (Date.now() - cache.lastFetch < 2000) {
+    if (Date.now() - cache.lastFetch < FRESH_DATA_THRESHOLD_MS) {
       pushHistorySnapshot(channelAnalysis, clientAnalysis);
     }
 

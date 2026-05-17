@@ -17,6 +17,26 @@ let filterParams = {
   ipadType: 'all'
 };
 
+// ============================================================
+//  DASHBOARD CONSTANTS
+// ============================================================
+
+/** Maximum expected throughput for speed gauge scaling (Mbps) */
+const GAUGE_MAX_MBPS = 2000;
+
+/** Expected total client count for capacity planning readiness checks */
+const CAPACITY_TARGET_CLIENTS = 800;
+
+/** Maximum number of entries to keep in the struggling-clients event log */
+const EVENTS_LOG_MAX = 200;
+
+/** kbps to Mbps conversion factor */
+const KBPS_PER_MBPS = 1000;
+
+/** DFS 5 GHz channel numbers (channels 52–144) */
+const DFS_CHANNELS_5GHZ = ['52','56','60','64','100','104','108','112','116','120','124','128','132','136','140','144'];
+
+
 // DOMContentLoaded Initialization
 document.addEventListener('DOMContentLoaded', () => {
   console.log('[App] Initializing dashboard UI elements...');
@@ -1255,8 +1275,8 @@ function renderOptimalGrid() {
  * Format kbps value into a human-readable Mbps string.
  */
 function kbpsToMbps(kbps) {
-  if (kbps >= 1000000) return `${(kbps / 1000000).toFixed(1)} Gbps`;
-  if (kbps >= 1000) return `${(kbps / 1000).toFixed(0)} Mbps`;
+  if (kbps >= KBPS_PER_MBPS * KBPS_PER_MBPS) return `${(kbps / (KBPS_PER_MBPS * KBPS_PER_MBPS)).toFixed(1)} Gbps`;
+  if (kbps >= KBPS_PER_MBPS) return `${(kbps / KBPS_PER_MBPS).toFixed(0)} Mbps`;
   return `${kbps} kbps`;
 }
 
@@ -1279,11 +1299,11 @@ function renderSpeedsTab() {
   const cl = apiData.clients;
   const sum = cl.summary;
 
-  // Speed gauge values (cap at 2000 Mbps for gauge scale)
-  const dlMbps = Math.round(sum.totalDownloadKbps / 1000);
-  const ulMbps = Math.round(sum.totalUploadKbps / 1000);
-  const dlPct = Math.min(100, (dlMbps / 2000) * 100);
-  const ulPct = Math.min(100, (ulMbps / 2000) * 100);
+  // Speed gauge values (capped to GAUGE_MAX_MBPS for gauge scale)
+  const dlMbps = Math.round(sum.totalDownloadKbps / KBPS_PER_MBPS);
+  const ulMbps = Math.round(sum.totalUploadKbps / KBPS_PER_MBPS);
+  const dlPct = Math.min(100, (dlMbps / GAUGE_MAX_MBPS) * 100);
+  const ulPct = Math.min(100, (ulMbps / GAUGE_MAX_MBPS) * 100);
   const dlColor = dlPct > 80 ? '#EF4444' : dlPct > 50 ? '#F59E0B' : '#10B981';
   const ulColor = ulPct > 80 ? '#EF4444' : ulPct > 50 ? '#F59E0B' : '#818CF8';
 
@@ -1317,11 +1337,11 @@ function renderSpeedsTab() {
   // Capacity count
   const capCountEl = document.getElementById('capacity-count');
   if (capCountEl) {
-    capCountEl.innerHTML = `${sum.totalAllClients}<span style="font-size:0.45em; color:var(--text-dark)">&nbsp;/ 800</span>`;
+    capCountEl.innerHTML = `${sum.totalAllClients}<span style="font-size:0.45em; color:var(--text-dark)">&nbsp;/ ${CAPACITY_TARGET_CLIENTS}</span>`;
   }
   const capReadinessEl = document.getElementById('capacity-readiness-label');
   if (capReadinessEl) {
-    const pctFull = Math.round((sum.totalAllClients / 800) * 100);
+    const pctFull = Math.round((sum.totalAllClients / CAPACITY_TARGET_CLIENTS) * 100);
     capReadinessEl.textContent = `${pctFull}% capacity utilized`;
     capReadinessEl.style.color = pctFull > 80 ? 'var(--color-danger)' : pctFull > 50 ? 'var(--color-warning)' : 'var(--color-success)';
   }
@@ -1435,7 +1455,7 @@ function renderCapacityWidget() {
   const cl = apiData.clients.summary;
 
   const numAPs = ch.totalAPs;
-  const expectedClients = 800;
+  const expectedClients = CAPACITY_TARGET_CLIENTS;
   const perAP = numAPs > 0 ? Math.round(expectedClients / numAPs) : 0;
 
   const checks = [
@@ -1464,7 +1484,7 @@ function renderCapacityWidget() {
     },
     {
       label: '5 GHz Average Channel Utilization',
-      detail: `Current: ${ch.avgUtil5}% (target: < 60%; at 800 clients it will be much higher)`,
+      detail: `Current: ${ch.avgUtil5}% (target: < 60%; at ${CAPACITY_TARGET_CLIENTS} clients it will be much higher)`,
       pass: ch.avgUtil5 < 60,
       warn: ch.avgUtil5 >= 60 && ch.avgUtil5 < 75
     },
@@ -1477,16 +1497,12 @@ function renderCapacityWidget() {
     {
       label: 'DFS Channel Availability',
       detail: (() => {
-        const dfsChs = ['52','56','60','64','100','104','108','112','116','120','124','128','132','136','140','144'];
-        const dfsInUse = dfsChs.filter(c => (ch.channelCounts5[c] || 0) > 0).length;
+        const dfsInUse = DFS_CHANNELS_5GHZ.filter(c => (ch.channelCounts5[c] || 0) > 0).length;
         return dfsInUse > 0
           ? `${dfsInUse} DFS channels in use — spectrum expanded`
           : 'No DFS channels active. Only 2 usable non-DFS 5 GHz channels available.';
       })(),
-      pass: (() => {
-        const dfsChs = ['52','56','60','64','100','104','108','112','116'];
-        return dfsChs.some(c => (ch.channelCounts5[c] || 0) > 0);
-      })(),
+      pass: DFS_CHANNELS_5GHZ.some(c => (ch.channelCounts5[c] || 0) > 0),
       warn: false
     },
     {
@@ -1547,7 +1563,6 @@ function renderCapacityWidget() {
 // ============================================================
 
 const EVENTS_LOG_KEY = 'unifi_events_log';
-const EVENTS_LOG_MAX = 200;
 
 /**
  * Read events log from localStorage
