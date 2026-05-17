@@ -3,6 +3,35 @@
  */
 
 class NetworkAnalyzer {
+  parseFloorFromName(apName = '') {
+    const name = apName.toUpperCase();
+    if (name.includes('EG') || name.includes('ERDGESCHOSS') || name.startsWith('AP-EG')) return 'EG';
+    if (name.includes('1OG') || name.includes('1.OG') || name.includes('AP-1G') || name.includes('AP-1OG')) return '1OG';
+    if (name.includes('2OG') || name.includes('2.OG') || name.includes('AP-2G') || name.includes('AP-2OG')) return '2OG';
+    return 'Other';
+  }
+
+  extractRoomFromApName(apName = '') {
+    const cleaned = apName.replace(/^AP[-_]/i, '');
+    const parts = cleaned.split(/[-_]/).filter(Boolean);
+    if (parts.length <= 1) return cleaned || 'Unknown';
+    return parts.slice(1).join(' ');
+  }
+
+  getBlueprintOffsetByFloor(floor) {
+    if (floor === 'EG') return 0;
+    if (floor === '1OG') return 3;
+    if (floor === '2OG') return 6;
+    return 9;
+  }
+
+  findActiveLesson(scheduleByRoom = {}, room = '', now = new Date()) {
+    const roomKey = room.toLowerCase();
+    const roomSchedule = scheduleByRoom[roomKey] || scheduleByRoom[room] || [];
+    const currentHour = now.getHours();
+    return roomSchedule.find(slot => currentHour >= slot.startHour && currentHour < slot.endHour) || null;
+  }
+
   /**
    * Run RF channel loading and interference diagnostics.
    * @param {Array} devices - List of devices from UniFi API
@@ -125,6 +154,94 @@ class NetworkAnalyzer {
       });
     }
 
+    // 3. Build AP blueprint model (used for remediation and floorplan rendering)
+    const radiosByAp = {};
+    apRadios.forEach(radio => {
+      if (!radiosByAp[radio.apMac]) {
+        radiosByAp[radio.apMac] = {
+          mac: radio.apMac,
+          name: radio.apName,
+          ip: radio.ip,
+          model: radio.model,
+          radios: {}
+        };
+      }
+      radiosByAp[radio.apMac].radios[radio.radio] = radio;
+    });
+
+    const ch24Options = [1, 6, 11];
+    const ch5Options = [36, 44, 52, 60, 100, 108, 116, 124, 132, 140];
+    const blueprint = Object.values(radiosByAp)
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((ap, index) => {
+        const floor = this.parseFloorFromName(ap.name);
+        const floorOffset = this.getBlueprintOffsetByFloor(floor);
+        const r24 = ap.radios.ng || null;
+        const r5 = ap.radios.na || null;
+        const optCh24 = ch24Options[(index + Math.floor(floorOffset / 3)) % ch24Options.length];
+        const optCh5 = ch5Options[(index + floorOffset) % ch5Options.length];
+        const optPower24 = 9;
+        const optPower5 = 15;
+        const optMinRssi = -75;
+
+        const currentMinRssi = r24 && r24.min_rssi_enabled
+          ? r24.min_rssi
+          : (r5 && r5.min_rssi_enabled ? r5.min_rssi : null);
+
+        const drift = {
+          ch24: !!r24 && r24.channel !== optCh24,
+          ch5: !!r5 && r5.channel !== optCh5,
+          power24: !!r24 && (r24.tx_power_mode === 'auto' || (r24.tx_power !== null && r24.tx_power > 10)),
+          power5: !!r5 && (r5.tx_power_mode === 'auto' || (r5.tx_power !== null && r5.tx_power > 16)),
+          minRssi: !currentMinRssi || currentMinRssi !== optMinRssi
+        };
+        const driftReasons = Object.entries(drift)
+          .filter(([, value]) => value)
+          .map(([key]) => key);
+        const hasDrift = driftReasons.length > 0;
+
+        const maxCci = Math.max(r24?.cci_count || 0, r5?.cci_count || 0);
+        const maxUtil = Math.max(r24?.cu_total || 0, r5?.cu_total || 0);
+        const heavyOverlap = maxCci > 10 || maxUtil > 75;
+        const lowCci = maxCci <= 2 && maxUtil < 45;
+        const floorplanStatus = hasDrift || heavyOverlap
+          ? 'critical'
+          : (lowCci ? 'optimized' : 'normal');
+
+        return {
+          mac: ap.mac,
+          name: ap.name,
+          ip: ap.ip,
+          model: ap.model,
+          floor,
+          room: this.extractRoomFromApName(ap.name),
+          floorplanStatus,
+          metrics: {
+            maxCci,
+            maxUtil
+          },
+          current: {
+            channel24: r24 ? r24.channel : null,
+            power24: r24 ? r24.tx_power : null,
+            power24Mode: r24 ? r24.tx_power_mode : null,
+            channel5: r5 ? r5.channel : null,
+            power5: r5 ? r5.tx_power : null,
+            power5Mode: r5 ? r5.tx_power_mode : null,
+            minRssi: currentMinRssi
+          },
+          optimal: {
+            channel24: optCh24,
+            power24: optPower24,
+            channel5: optCh5,
+            power5: optPower5,
+            minRssi: optMinRssi
+          },
+          drift,
+          driftReasons,
+          hasDrift
+        };
+      });
+
     return {
       summary: {
         totalAPs: aps.length,
@@ -138,7 +255,8 @@ class NetworkAnalyzer {
         warningRadiosCount: apRadios.filter(r => r.health === 'warning').length
       },
       radios: apRadios.sort((a,b) => b.cu_total - a.cu_total),
-      recommendations
+      recommendations,
+      blueprint
     };
   }
 
@@ -146,12 +264,15 @@ class NetworkAnalyzer {
    * Run deep diagnostics on client devices, focusing on iPads and Apple devices.
    * @param {Array} clients - List of clients from UniFi API
    * @param {Array} devices - List of devices from UniFi API
+   * @param {Object} webUntisData - WebUntis-linked classroom scheduling data
    */
-  analyzeClients(clients, devices) {
+  analyzeClients(clients, devices, webUntisData = {}) {
     // Map AP MAC to AP Name for easy lookup
     const apMap = {};
+    const apRoomMap = {};
     devices.forEach(d => {
       apMap[d.mac] = d.name || d.ip || d.mac;
+      apRoomMap[d.mac] = this.extractRoomFromApName(d.name || d.mac);
     });
 
     // Create a dictionary of AP radio channel utilization for client lookup
@@ -177,6 +298,10 @@ class NetworkAnalyzer {
     });
 
     appleClients.forEach(c => {
+      const linkedApName = apMap[c.ap_mac] || 'Unknown Access Point';
+      const linkedRoom = apRoomMap[c.ap_mac] || 'Unknown Room';
+      const activeLesson = this.findActiveLesson(webUntisData.scheduleByRoom, linkedRoom, new Date());
+
       const diag = {
         mac: c.mac,
         ip: c.ip || 'No IP',
@@ -190,9 +315,13 @@ class NetworkAnalyzer {
         channel: c.channel || 0,
         band: c.radio === 'ng' ? '2.4GHz' : '5GHz',
         apMac: c.ap_mac,
-        apName: apMap[c.ap_mac] || 'Unknown Access Point',
+        apName: linkedApName,
         uptime: c.uptime || 0,
         anomalies: c.anomalies || [],
+        estimatedRoom: linkedRoom,
+        schoolHour: activeLesson ? activeLesson.label : 'No active class',
+        teacherName: activeLesson ? activeLesson.teacher : 'n/a',
+        className: activeLesson ? activeLesson.className : 'n/a',
         flags: [],
         severity: 'healthy',
         recommendation: ''
@@ -281,6 +410,10 @@ class NetworkAnalyzer {
         warningCount,
         healthyCount,
         healthIndex
+      },
+      scheduleContext: {
+        source: webUntisData.source || 'mock',
+        currentHour: webUntisData.currentHour || new Date().getHours()
       },
       clients: ipadDiagnostics.sort((a, b) => {
         // Sort critical first, then warning, then healthy

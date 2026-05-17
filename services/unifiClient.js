@@ -127,6 +127,37 @@ class UnifiClient {
   }
 
   /**
+   * Helper to perform authenticated write requests with session retry.
+   * @param {string} path
+   * @param {string} method
+   * @param {Object} body
+   */
+  async _writeWithRetry(path, method, body) {
+    if (!this.cookie) {
+      await this.login();
+    }
+
+    let res = await this._request({ method, path }, body);
+    if (res.statusCode === 401 || res.statusCode === 400 || (res.body && res.body.includes('api.err.LoginRequired'))) {
+      console.warn(`[UniFi] Session expired on write ${method} ${path}. Re-authenticating...`);
+      await this.login();
+      res = await this._request({ method, path }, body);
+    }
+
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw new Error(`Write call to ${path} failed with status ${res.statusCode}: ${res.body}`);
+    }
+
+    let parsed = {};
+    try {
+      parsed = JSON.parse(res.body || '{}');
+    } catch (e) {
+      parsed = {};
+    }
+    return parsed;
+  }
+
+  /**
    * Fetch all UniFi devices on the configured site.
    */
   async getDevices() {
@@ -155,6 +186,139 @@ class UnifiClient {
     } catch (err) {
       console.warn(`[UniFi Connection Failed] Using simulated demo clients instead: ${err.message}`);
       return MOCK_CLIENTS;
+    }
+  }
+
+  async getWebUntisSchedule() {
+    if (process.env.MOCK_MODE === 'true' || !process.env.WEBUNTIS_API_URL) {
+      return this._buildMockUntisSchedule();
+    }
+
+    try {
+      const res = await this._request({
+        method: 'GET',
+        path: process.env.WEBUNTIS_API_URL
+      });
+
+      if (res.statusCode !== 200) {
+        throw new Error(`WebUntis API returned status ${res.statusCode}`);
+      }
+
+      const payload = JSON.parse(res.body || '{}');
+      return {
+        source: 'live',
+        currentHour: new Date().getHours(),
+        scheduleByRoom: payload.scheduleByRoom || {}
+      };
+    } catch (err) {
+      console.warn(`[WebUntis] Failed to fetch live schedule, using mock: ${err.message}`);
+      return this._buildMockUntisSchedule();
+    }
+  }
+
+  _buildMockUntisSchedule() {
+    const currentHour = new Date().getHours();
+    return {
+      source: 'mock',
+      currentHour,
+      scheduleByRoom: MOCK_WEBUNTIS_SCHEDULE
+    };
+  }
+
+  _applyRemediationToMock(mac, target) {
+    const device = MOCK_DEVICES.find(d => (d.mac || '').toLowerCase() === mac.toLowerCase());
+    if (!device || !device.radio_table) {
+      return false;
+    }
+
+    const ngRadio = device.radio_table.find(r => r.radio === 'ng');
+    const naRadio = device.radio_table.find(r => r.radio === 'na');
+
+    if (ngRadio) {
+      ngRadio.tx_power_mode = 'custom';
+      ngRadio.tx_power = target.power24;
+      ngRadio.min_rssi_enabled = true;
+      ngRadio.min_rssi = target.minRssi;
+    }
+    if (naRadio) {
+      naRadio.tx_power_mode = 'custom';
+      naRadio.tx_power = target.power5;
+      naRadio.min_rssi_enabled = true;
+      naRadio.min_rssi = target.minRssi;
+    }
+
+    if (device.radio_table_stats) {
+      const ngStat = device.radio_table_stats.find(r => r.radio === 'ng');
+      const naStat = device.radio_table_stats.find(r => r.radio === 'na');
+      if (ngStat) {
+        ngStat.channel = target.channel24;
+        ngStat.tx_power = target.power24;
+      }
+      if (naStat) {
+        naStat.channel = target.channel5;
+        naStat.tx_power = target.power5;
+      }
+    }
+
+    return true;
+  }
+
+  async remediateAccessPoint(mac, target) {
+    const normalizedMac = String(mac || '').toLowerCase();
+    const safeTarget = {
+      channel24: Number(target.channel24),
+      power24: Number(target.power24),
+      channel5: Number(target.channel5),
+      power5: Number(target.power5),
+      minRssi: Number(target.minRssi)
+    };
+
+    if (process.env.MOCK_MODE === 'true') {
+      const patched = this._applyRemediationToMock(normalizedMac, safeTarget);
+      return {
+        success: patched,
+        mode: 'mock',
+        message: patched ? 'Mock remediation applied successfully.' : 'AP not found in mock dataset.'
+      };
+    }
+
+    try {
+      const devices = await this.getDevices();
+      const ap = devices.find(d => (d.mac || '').toLowerCase() === normalizedMac);
+      if (!ap || !ap._id) {
+        throw new Error(`No AP found for MAC ${normalizedMac}`);
+      }
+
+      const payload = {
+        radio_table: [
+          { radio: 'ng', channel: safeTarget.channel24, tx_power_mode: 'custom', tx_power: safeTarget.power24, min_rssi_enabled: true, min_rssi: safeTarget.minRssi },
+          { radio: 'na', channel: safeTarget.channel5, tx_power_mode: 'custom', tx_power: safeTarget.power5, min_rssi_enabled: true, min_rssi: safeTarget.minRssi }
+        ]
+      };
+
+      try {
+        await this._writeWithRetry(`/proxy/network/v2/api/site/${this.site}/devices/${ap._id}`, 'PATCH', payload);
+      } catch (modernErr) {
+        console.warn(`[UniFi] Modern remediation endpoint failed, trying legacy endpoint: ${modernErr.message}`);
+        await this._writeWithRetry(`/api/s/${this.site}/rest/device/${ap._id}`, 'PUT', payload);
+      }
+
+      return {
+        success: true,
+        mode: 'live',
+        message: 'Remediation pushed to UniFi controller.',
+        apId: ap._id
+      };
+    } catch (err) {
+      console.warn(`[UniFi] Live remediation failed, applying mock fallback: ${err.message}`);
+      const patched = this._applyRemediationToMock(normalizedMac, safeTarget);
+      return {
+        success: patched,
+        mode: 'fallback-mock',
+        message: patched
+          ? `Controller write failed (${err.message}). Mock remediation applied for offline validation.`
+          : `Controller write failed and mock AP not found: ${err.message}`
+      };
     }
   }
 }
@@ -273,6 +437,37 @@ const MOCK_CLIENTS = [
 
   { mac: '22:33:44:55:66:77', ip: '172.16.1.150', hostname: 'PC-Klassenzimmer-Win10', oui: 'Intel Corporate', satisfaction: 90, signal: -65, tx_rate: 86600, rx_rate: 86600, wifi_tx_retries_percentage: 8, channel: 40, radio: 'na', ap_mac: 'fc:ec:da:11:22:33', uptime: 18000, anomalies: [] }
 ];
+
+const MOCK_WEBUNTIS_SCHEDULE = {
+  'klasse 1a': [
+    { startHour: 8, endHour: 9, label: '1st Hour', className: '1A', teacher: 'Frau Kofler' },
+    { startHour: 9, endHour: 10, label: '2nd Hour', className: '1A', teacher: 'Herr Leitner' },
+    { startHour: 10, endHour: 11, label: '3rd Hour', className: '1A', teacher: 'Frau Schmid' }
+  ],
+  'klasse 1b': [
+    { startHour: 8, endHour: 9, label: '1st Hour', className: '1B', teacher: 'Frau Fink' },
+    { startHour: 9, endHour: 10, label: '2nd Hour', className: '1B', teacher: 'Herr Rainer' },
+    { startHour: 10, endHour: 11, label: '3rd Hour', className: '1B', teacher: 'Frau Huber' }
+  ],
+  'klasse 2a': [
+    { startHour: 8, endHour: 9, label: '1st Hour', className: '2A', teacher: 'Herr Rauth' },
+    { startHour: 9, endHour: 10, label: '2nd Hour', className: '2A', teacher: 'Frau Larcher' },
+    { startHour: 10, endHour: 11, label: '3rd Hour', className: '2A', teacher: 'Herr Mair' }
+  ],
+  'klasse 2b': [
+    { startHour: 8, endHour: 9, label: '1st Hour', className: '2B', teacher: 'Frau Auer' },
+    { startHour: 9, endHour: 10, label: '2nd Hour', className: '2B', teacher: 'Herr Gruber' },
+    { startHour: 10, endHour: 11, label: '3rd Hour', className: '2B', teacher: 'Frau Kainz' }
+  ],
+  'physikraum': [
+    { startHour: 8, endHour: 9, label: '1st Hour', className: '3A', teacher: 'Herr Tiefenbrunner' },
+    { startHour: 9, endHour: 10, label: '2nd Hour', className: '3A', teacher: 'Herr Tiefenbrunner' },
+    { startHour: 10, endHour: 11, label: '3rd Hour', className: '3B', teacher: 'Frau Neurauter' }
+  ],
+  'lehrerzimmer': [
+    { startHour: 8, endHour: 12, label: 'Morning Duty', className: 'Faculty', teacher: 'Lehrerkonferenz' }
+  ]
+};
 
 // Export a single instance to share the session cookie across the application
 module.exports = new UnifiClient();

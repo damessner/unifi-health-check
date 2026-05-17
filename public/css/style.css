@@ -929,6 +929,70 @@ body {
   color: var(--text-muted);
 }
 
+.floorplan-subtitle {
+  margin-top: -8px;
+  font-size: 0.85rem;
+}
+
+.floorplan-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 20px;
+}
+
+.floorplan-floor-card .card-header {
+  margin-bottom: 12px;
+}
+
+.floorplan-canvas {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.floorplan-canvas svg {
+  width: 100%;
+  min-width: 500px;
+  height: auto;
+}
+
+.floorplan-node-label {
+  fill: var(--text-muted);
+  font-size: 9px;
+  font-family: var(--font-body);
+}
+
+.floorplan-empty-label {
+  fill: var(--text-dark);
+  font-size: 12px;
+  font-family: var(--font-body);
+}
+
+.btn-remediate {
+  background: linear-gradient(135deg, rgba(79, 70, 229, 0.95), rgba(99, 102, 241, 0.95));
+  color: white;
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.btn-remediate:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.08);
+  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.25);
+}
+
+.btn-remediate:active {
+  transform: translateY(0);
+}
+
 /* Optimization Wizard steps styling */
 .wizard-header {
   display: flex;
