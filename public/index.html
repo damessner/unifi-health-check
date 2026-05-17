@@ -51,6 +51,10 @@
           <i data-lucide="router"></i>
           <span>Access Points</span>
         </button>
+        <button class="nav-btn" id="btn-floorplan" onclick="switchTab('floorplan')">
+          <i data-lucide="map"></i>
+          <span>Floorplan View</span>
+        </button>
         <button class="nav-btn" id="btn-ipads" onclick="switchTab('ipads')">
           <i data-lucide="tablet"></i>
           <span>iPad Diagnostics</span>
@@ -332,7 +336,20 @@
         </div>
       </section>
       
-      <!-- TAB 4: IPAD DIAGNOSTICS -->
+      <!-- TAB 4: FLOORPLAN -->
+      <section class="tab-content" id="tab-floorplan">
+        <div class="glass-card mb-4">
+          <div class="card-header">
+            <h3>Interactive Channel Congestion Floorplan</h3>
+          </div>
+          <p class="text-muted floorplan-subtitle">AP markers are placed by floor from AP naming conventions. Green = optimized low CCI, Yellow = normal, Red = drift/high overlap.</p>
+        </div>
+        <div class="floorplan-grid" id="floorplan-grid">
+          <!-- Dynamic floor maps -->
+        </div>
+      </section>
+
+      <!-- TAB 5: IPAD DIAGNOSTICS -->
       <section class="tab-content" id="tab-ipads">
         <!-- Client summary header -->
         <div class="ipad-summary-bar mb-4">
@@ -397,6 +414,8 @@
                   <th>Band / Channel</th>
                   <th>Experience %</th>
                   <th>TX Retries %</th>
+                  <th>Estimated Room</th>
+                  <th>Active School Hour</th>
                   <th>Diagnostic Symptoms</th>
                   <th>Action Required</th>
                 </tr>
@@ -409,7 +428,7 @@
         </div>
       </section>
       
-      <!-- TAB 5: OPTIMIZATION PLAN -->
+      <!-- TAB 6: OPTIMIZATION PLAN -->
       <section class="tab-content" id="tab-optimizer">
         <!-- Dynamic Print Report Header -->
         <div class="print-report-header">
@@ -558,6 +577,7 @@
                   <th>5GHz Power (Current ➔ Opt)</th>
                   <th>Min RSSI</th>
                   <th>Drift Audit</th>
+                  <th class="no-print">Action</th>
                 </tr>
               </thead>
               <tbody id="optimization-grid-body">

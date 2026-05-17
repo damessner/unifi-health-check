@@ -154,6 +154,10 @@ function updateHeaderContext() {
       title: 'Access Point Inventory',
       subtitle: 'Active school AP status and radio configurations'
     },
+    floorplan: {
+      title: 'Interactive Floorplan View',
+      subtitle: 'Three-floor AP congestion and drift visualization'
+    },
     ipads: {
       title: 'iPad Telemetry Diagnostics',
       subtitle: 'Real-time health monitoring of pupils\' iPads and Apple devices'
@@ -205,6 +209,7 @@ async function fetchData(isSilent = false, force = false) {
     renderOverview();
     renderChannelsTab();
     renderApsTab();
+    renderFloorplanTab();
     renderIpadsTab();
     updateGlobalBadges();
     renderOptimalGrid();
@@ -691,6 +696,54 @@ function renderIpadsTab() {
   filterIpads();
 }
 
+function renderFloorplanTab() {
+  if (!apiData) return;
+  const floorGrid = document.getElementById('floorplan-grid');
+  if (!floorGrid) return;
+
+  const byFloor = { EG: [], '1OG': [], '2OG': [] };
+  (apiData.channels.blueprint || []).forEach(ap => {
+    if (byFloor[ap.floor]) byFloor[ap.floor].push(ap);
+  });
+
+  floorGrid.innerHTML = '';
+  ['EG', '1OG', '2OG'].forEach(floor => {
+    const floorAps = byFloor[floor];
+    const width = 560;
+    const height = 170;
+    const marginX = 30;
+    const step = floorAps.length > 1 ? (width - marginX * 2) / (floorAps.length - 1) : 0;
+    const nodes = floorAps.map((ap, idx) => {
+      const x = floorAps.length === 1 ? width / 2 : Math.round(marginX + idx * step);
+      const y = 85 + ((idx % 2) ? 20 : -20);
+      const color = getFloorplanMarkerColor(ap.floorplanStatus);
+      const stroke = ap.floorplanStatus === 'critical' ? '#ef4444' : '#111827';
+      return `
+        <g>
+          <circle cx="${x}" cy="${y}" r="12" fill="${color}" stroke="${stroke}" stroke-width="1.5"></circle>
+          <text x="${x}" y="${y + 24}" text-anchor="middle" class="floorplan-node-label">${escapeHtml(ap.name)}</text>
+        </g>
+      `;
+    }).join('');
+
+    const card = document.createElement('div');
+    card.className = 'glass-card floorplan-floor-card';
+    card.innerHTML = `
+      <div class="card-header flex-header">
+        <h3>${floor}</h3>
+        <span class="count-badge">${floorAps.length} APs</span>
+      </div>
+      <div class="floorplan-canvas">
+        <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" aria-label="Floor ${floor} AP map">
+          <rect x="10" y="18" width="${width - 20}" height="${height - 36}" rx="12" fill="rgba(255,255,255,0.02)" stroke="rgba(255,255,255,0.08)"></rect>
+          ${nodes || '<text x="50%" y="50%" text-anchor="middle" class="floorplan-empty-label">No APs detected for this floor</text>'}
+        </svg>
+      </div>
+    `;
+    floorGrid.appendChild(card);
+  });
+}
+
 /**
  * iPad Filter and Roster populating
  */
@@ -776,6 +829,14 @@ function filterIpads() {
         <strong style="color:${c.txRetriesPct > 30 ? 'var(--color-danger)' : (c.txRetriesPct > 15 ? 'var(--color-warning)' : 'var(--text-main)')};">${c.txRetriesPct}%</strong>
       </td>
       <td>
+        <strong style="display:block;">${escapeHtml(c.estimatedRoom || 'Unknown')}</strong>
+        <span style="font-size:0.72rem; color:var(--text-dark);">${escapeHtml(c.className || 'n/a')}</span>
+      </td>
+      <td>
+        <strong style="display:block;">${escapeHtml(c.schoolHour || 'No active class')}</strong>
+        <span style="font-size:0.72rem; color:var(--text-dark);">${escapeHtml(c.teacherName || 'n/a')}</span>
+      </td>
+      <td>
         <div class="symptom-tag-container">${symptomTags || '<span style="color:var(--color-success); font-size:0.78rem;">✔ No anomalies</span>'}</div>
       </td>
       <td class="diag-action-text">${c.recommendation}</td>
@@ -786,7 +847,7 @@ function filterIpads() {
   if (filtered.length === 0) {
     tableBody.innerHTML = `
       <tr>
-        <td colspan="9" style="text-align:center; padding:40px; color:var(--text-dark);">
+        <td colspan="11" style="text-align:center; padding:40px; color:var(--text-dark);">
           <i data-lucide="tablet" style="width:32px; height:32px; margin-bottom:12px; display:inline-block;"></i>
           <p>No Apple clients match your active filters.</p>
         </td>
@@ -919,6 +980,12 @@ function getGradientForUtilization(util) {
   if (util > 75) return 'linear-gradient(90deg, #EF4444, #F87171)';
   if (util > 50) return 'linear-gradient(90deg, #F59E0B, #FBBF24)';
   return 'linear-gradient(90deg, #10B981, #34D399)';
+}
+
+function getFloorplanMarkerColor(status) {
+  if (status === 'critical') return '#ef4444';
+  if (status === 'optimized') return '#10b981';
+  return '#f59e0b';
 }
 
 /**
@@ -1057,24 +1124,7 @@ function renderOptimalGrid() {
   if (!tableBody || !apiData) return;
 
   tableBody.innerHTML = '';
-
-  const apList = {};
-  apiData.channels.radios.forEach(r => {
-    if (!apList[r.apMac]) {
-      apList[r.apMac] = {
-        mac: r.apMac,
-        name: r.apName,
-        model: r.model,
-        radios: {}
-      };
-    }
-    apList[r.apMac].radios[r.radio] = r;
-  });
-
-  const apArray = Object.values(apList).sort((a, b) => a.name.localeCompare(b.name));
-
-  const ch24Options = [1, 6, 11];
-  const ch5Options = [36, 44, 52, 60, 100, 108, 116, 124, 132, 140];
+  const apArray = apiData.channels.blueprint || [];
 
   let driftCount = 0;
   let totalAudits = 0;
@@ -1089,75 +1139,42 @@ function renderOptimalGrid() {
   }
 
   apArray.forEach((ap, index) => {
-    let floor = 'EG';
-    let floorOffset = 0;
-    const name = ap.name.toUpperCase();
-    if (name.includes('EG') || name.startsWith('E-') || name.includes('ERDGESCHOSS')) {
-      floor = 'EG';
-      floorOffset = 0;
-    } else if (name.includes('1OG') || name.includes('1.OG') || name.includes('FIRST')) {
-      floor = '1OG';
-      floorOffset = 3;
-    } else if (name.includes('2OG') || name.includes('2.OG') || name.includes('SECOND')) {
-      floor = '2OG';
-      floorOffset = 6;
-    } else {
-      floor = 'Other';
-      floorOffset = 9;
-    }
-
-    const optCh24 = ch24Options[(index + Math.floor(floorOffset / 3)) % ch24Options.length];
-    const optCh5 = ch5Options[(index + floorOffset) % ch5Options.length];
-
-    const optPower24 = 9;
-    const optPower5 = 15;
-    const optMinRssi = -75;
-
-    const r24 = ap.radios.ng;
-    const r5 = ap.radios.na;
-
-    const curCh24 = r24 ? r24.channel : null;
-    const curPower24 = r24 ? r24.tx_power : null;
-
-    const curCh5 = r5 ? r5.channel : null;
-    const curPower5 = r5 ? r5.tx_power : null;
-
-    const curMinRssi = r24 && r24.min_rssi_enabled ? r24.min_rssi : (r5 && r5.min_rssi_enabled ? r5.min_rssi : null);
-
-    const isCh24Drift = r24 && curCh24 !== optCh24;
-    const isCh5Drift = r5 && curCh5 !== optCh5;
-    const isPower24Drift = r24 && (r24.tx_power_mode === 'auto' || (curPower24 !== null && curPower24 > 10));
-    const isPower5Drift = r5 && (r5.tx_power_mode === 'auto' || (curPower5 !== null && curPower5 > 16));
-    const isMinRssiDrift = !curMinRssi || curMinRssi !== optMinRssi;
-
-    const hasDrift = isCh24Drift || isCh5Drift || isPower24Drift || isPower5Drift || isMinRssiDrift;
+    const floor = ap.floor || 'Other';
+    const hasDrift = !!ap.hasDrift;
+    const opt = ap.optimal || {};
+    const cur = ap.current || {};
+    const drift = ap.drift || {};
 
     if (hasDrift) {
       driftCount++;
     }
     totalAudits++;
 
-    const cell24Ch = r24 
-      ? `<span class="${isCh24Drift ? 'text-drift' : ''}">${curCh24} ➔ <strong>${optCh24}</strong></span>`
+    const cell24Ch = cur.channel24 !== null && cur.channel24 !== undefined
+      ? `<span class="${drift.ch24 ? 'text-drift' : ''}">${cur.channel24} ➔ <strong>${opt.channel24}</strong></span>`
       : '<span class="text-muted">Disabled</span>';
 
-    const cell24Power = r24
-      ? `<span class="${isPower24Drift ? 'text-drift' : ''}">${r24.tx_power_mode === 'auto' ? 'Auto' : `${curPower24} dBm`} ➔ <strong>9 dBm (Low)</strong></span>`
+    const cell24Power = cur.power24 !== null && cur.power24 !== undefined
+      ? `<span class="${drift.power24 ? 'text-drift' : ''}">${cur.power24Mode === 'auto' ? 'Auto' : `${cur.power24} dBm`} ➔ <strong>${opt.power24} dBm (Low)</strong></span>`
       : '<span class="text-muted">Disabled</span>';
 
-    const cell5Ch = r5
-      ? `<span class="${isCh5Drift ? 'text-drift' : ''}">${curCh5} ➔ <strong>${optCh5}</strong></span>`
+    const cell5Ch = cur.channel5 !== null && cur.channel5 !== undefined
+      ? `<span class="${drift.ch5 ? 'text-drift' : ''}">${cur.channel5} ➔ <strong>${opt.channel5}</strong></span>`
       : '<span class="text-muted">Disabled</span>';
 
-    const cell5Power = r5
-      ? `<span class="${isPower5Drift ? 'text-drift' : ''}">${r5.tx_power_mode === 'auto' ? 'Auto' : `${curPower5} dBm`} ➔ <strong>15 dBm (Med)</strong></span>`
+    const cell5Power = cur.power5 !== null && cur.power5 !== undefined
+      ? `<span class="${drift.power5 ? 'text-drift' : ''}">${cur.power5Mode === 'auto' ? 'Auto' : `${cur.power5} dBm`} ➔ <strong>${opt.power5} dBm (Med)</strong></span>`
       : '<span class="text-muted">Disabled</span>';
 
-    const cellMinRssi = `<span class="${isMinRssiDrift ? 'text-drift' : ''}">${curMinRssi ? `${curMinRssi} dBm` : 'Disabled'} ➔ <strong>-75 dBm</strong></span>`;
+    const cellMinRssi = `<span class="${drift.minRssi ? 'text-drift' : ''}">${cur.minRssi ? `${cur.minRssi} dBm` : 'Disabled'} ➔ <strong>${opt.minRssi} dBm</strong></span>`;
 
     const auditBadge = hasDrift
       ? `<span class="badge-drift"><i data-lucide="alert-triangle" style="width:12px; height:12px; display:inline-block; vertical-align:middle; margin-right:4px;"></i>DRIFT DETECTED</span>`
       : `<span class="badge-ok"><i data-lucide="check" style="width:12px; height:12px; display:inline-block; vertical-align:middle; margin-right:4px;"></i>OPTIMAL</span>`;
+
+    const remediationButton = hasDrift
+      ? `<button class="btn-remediate" onclick="applyRemediation('${ap.mac}')"><i data-lucide="wand-sparkles" style="width:14px;height:14px;"></i><span>Apply Remediation</span></button>`
+      : `<span style="font-size:0.78rem;color:var(--text-dark);">No action required</span>`;
 
     const isChecked = checkedMacs.includes(ap.mac);
     const tr = document.createElement('tr');
@@ -1179,6 +1196,7 @@ function renderOptimalGrid() {
       <td>${cell5Power}</td>
       <td>${cellMinRssi}</td>
       <td>${auditBadge}</td>
+      <td class="no-print">${remediationButton}</td>
     `;
     tableBody.appendChild(tr);
   });
@@ -1218,5 +1236,40 @@ function renderOptimalGrid() {
 
   if (window.lucide) {
     window.lucide.createIcons();
+  }
+}
+
+async function applyRemediation(mac) {
+  if (!apiData || !apiData.channels || !apiData.channels.blueprint) return;
+  const ap = apiData.channels.blueprint.find(item => item.mac === mac);
+  if (!ap || !ap.optimal) return;
+
+  const proceed = confirm(`Apply optimal remediation config to ${ap.name}?`);
+  if (!proceed) return;
+
+  try {
+    const response = await fetch('/api/remediate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mac,
+        target: {
+          channel24: ap.optimal.channel24,
+          power24: ap.optimal.power24,
+          channel5: ap.optimal.channel5,
+          power5: ap.optimal.power5,
+          minRssi: ap.optimal.minRssi
+        }
+      })
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(payload.error || payload.message || `HTTP ${response.status}`);
+    }
+    alert(`${payload.message} (${payload.mode})`);
+    fetchData(false, true);
+  } catch (err) {
+    console.error('[Remediation] Failed:', err);
+    alert(`Failed to apply remediation: ${err.message}`);
   }
 }

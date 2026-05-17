@@ -72,11 +72,12 @@ app.get('/api/diagnostics', async (req, res) => {
   try {
     const force = req.query.force === 'true';
     const { devices, clients } = await getFreshData(force);
+    const webUntis = await unifiClient.getWebUntisSchedule();
 
     console.log(`[Analyzer] Processing stats for ${devices.length} devices and ${clients.length} clients...`);
     
     const channelAnalysis = analyzer.analyzeChannels(devices);
-    const clientAnalysis = analyzer.analyzeClients(clients, devices);
+    const clientAnalysis = analyzer.analyzeClients(clients, devices, webUntis);
 
     res.json({
       success: true,
@@ -90,6 +91,47 @@ app.get('/api/diagnostics', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to compile network diagnostics from UniFi Controller.',
+      details: err.message
+    });
+  }
+});
+
+/**
+ * API: Apply remediation blueprint to an AP
+ */
+app.post('/api/remediate', async (req, res) => {
+  try {
+    const { mac, target } = req.body || {};
+    if (!mac || !target) {
+      return res.status(400).json({
+        success: false,
+        error: 'Both mac and target payload are required.'
+      });
+    }
+
+    const requiredKeys = ['channel24', 'power24', 'channel5', 'power5', 'minRssi'];
+    const missing = requiredKeys.filter(k => target[k] === undefined || target[k] === null || Number.isNaN(Number(target[k])));
+    if (missing.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: `Missing or invalid remediation target fields: ${missing.join(', ')}`
+      });
+    }
+
+    const result = await unifiClient.remediateAccessPoint(mac, target);
+    cache.lastFetch = 0; // force fresh data on next diagnostics request
+
+    return res.json({
+      success: !!result.success,
+      mac,
+      mode: result.mode || 'unknown',
+      message: result.message || 'Remediation request processed.'
+    });
+  } catch (err) {
+    console.error('[API Error] Remediation failed:', err);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to apply remediation request.',
       details: err.message
     });
   }
