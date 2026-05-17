@@ -2020,8 +2020,6 @@ body {
   height: 200px;
 }
 
-<<<<<<< Updated upstream
-=======
 /* ==========================================================================
    SANDBOX & RF NEIGHBOR PROXIMITY GRAPH STYLES
    ========================================================================== */
@@ -2493,6 +2491,3 @@ input:checked + .slider:before {
   70% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
   100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
 }
-
-
->>>>>>> Stashed changes

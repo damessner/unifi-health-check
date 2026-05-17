@@ -270,6 +270,28 @@ async function fetchData(isSilent = false, force = false) {
 
     rawApiData = payload;
     console.log('[API Fetch] Successfully fetched fresh telemetry!', rawApiData);
+
+    const nowTs = Date.now();
+    const serverTimestamp = new Date(payload.timestamp).getTime();
+    const secondsAgo = Number.isFinite(serverTimestamp)
+      ? Math.max(0, Math.round((nowTs - serverTimestamp) / 1000))
+      : 0;
+    const isCached = secondsAgo > 2;
+    const activeOverridesCount = Object.keys(sandboxOverrides || {}).length;
+
+    if (force) {
+      showToast('Fresh telemetry retrieved directly from the UniFi hardware controller.', 'success');
+    } else if (isCached) {
+      showToast(`Serving cached controller telemetry (${secondsAgo}s old to avoid rate limits).`, 'info');
+    } else {
+      showToast('Successfully synchronized with UniFi controller telemetry.', 'success');
+    }
+
+    if (sandboxModeEnabled && activeOverridesCount > 0) {
+      setTimeout(() => {
+        showToast(`Notice: ${activeOverridesCount} manual sandbox RF channel overrides are currently active.`, 'warning');
+      }, 800);
+    }
     
     // Process sandbox mapping or direct deep clone
     if (sandboxModeEnabled) {
@@ -286,10 +308,7 @@ async function fetchData(isSilent = false, force = false) {
     renderIpadsTab();
     updateGlobalBadges();
     renderOptimalGrid();
-<<<<<<< Updated upstream
-=======
     renderProximityMap();
->>>>>>> Stashed changes
     updateEventsLog();
     // Refresh history charts if history tab is active
     if (activeTab === 'history') {
@@ -310,6 +329,7 @@ async function fetchData(isSilent = false, force = false) {
     console.error('[API Fetch Error] Failed to update telemetry:', err);
     updateControllerStatusCard(false, err.message);
     showErrorNotification(err.message);
+    showToast(`Sync Failed: ${escapeHtml(err.message || 'Unknown error')}`, 'error');
   } finally {
     if (loadingOverlay) {
       loadingOverlay.style.opacity = '0';
@@ -1028,6 +1048,54 @@ function getSignalLabel(rssi) {
 }
 
 /**
+ * Display a floating glassmorphic toast notification.
+ * @param {string} message
+ * @param {'success'|'error'|'warning'|'info'} type
+ * @param {number} duration
+ */
+function showToast(message, type = 'info', duration = 5000) {
+  const container = document.getElementById('toast-container');
+  if (!container) return;
+
+  const toast = document.createElement('div');
+  toast.className = `toast-notification ${type}`;
+
+  let iconName = 'info';
+  if (type === 'success') iconName = 'check-circle';
+  else if (type === 'error') iconName = 'x-circle';
+  else if (type === 'warning') iconName = 'alert-triangle';
+
+  const titleText = type.toUpperCase();
+  toast.innerHTML = `
+    <i data-lucide="${iconName}" class="toast-icon"></i>
+    <div class="toast-content">
+      <div class="toast-title">${titleText}</div>
+      <div class="toast-message">${message}</div>
+    </div>
+  `;
+
+  container.appendChild(toast);
+
+  if (window.lucide) {
+    window.lucide.createIcons({
+      attrs: { class: 'toast-icon' },
+      nameAttr: 'data-lucide'
+    });
+  }
+
+  const hide = () => {
+    toast.classList.add('hide');
+    setTimeout(() => toast.remove(), 400);
+  };
+
+  const hideTimeout = setTimeout(hide, duration);
+  toast.addEventListener('click', () => {
+    clearTimeout(hideTimeout);
+    hide();
+  });
+}
+
+/**
  * Error Toast Alert popup
  * @param {string} msg 
  */
@@ -1183,6 +1251,30 @@ function renderOptimalGrid() {
     console.error('Error fetching checked MACs:', e);
   }
 
+  const apOverlapsMap = {};
+  apArray.forEach(ap => {
+    apOverlapsMap[ap.mac] = { ng: 0, na: 0 };
+    const config = AP_PROXIMITY_NEIGHBORS[ap.mac];
+    if (!config) return;
+
+    config.neighbors.forEach(neighborMac => {
+      const neighborAP = apList[neighborMac];
+      if (!neighborAP) return;
+
+      if (ap.radios.ng && neighborAP.radios.ng) {
+        const ch1 = ap.radios.ng.channel;
+        const ch2 = neighborAP.radios.ng.channel;
+        if (ch1 && ch2 && Math.abs(ch1 - ch2) <= 4) apOverlapsMap[ap.mac].ng++;
+      }
+
+      if (ap.radios.na && neighborAP.radios.na) {
+        const ch1 = ap.radios.na.channel;
+        const ch2 = neighborAP.radios.na.channel;
+        if (ch1 && ch2 && ch1 === ch2) apOverlapsMap[ap.mac].na++;
+      }
+    });
+  });
+
   apArray.forEach((ap, index) => {
     let floor = 'EG';
     let floorOffset = 0;
@@ -1232,6 +1324,33 @@ function renderOptimalGrid() {
     }
     totalAudits++;
 
+    const proximityConfig = AP_PROXIMITY_NEIGHBORS[ap.mac];
+    let neighborsCell = '<span class="text-dark">No physical neighbors mapped</span>';
+    if (proximityConfig && proximityConfig.neighbors.length > 0) {
+      const neighborItems = proximityConfig.neighbors.map(mac => {
+        const neighborAP = apList[mac];
+        if (!neighborAP) return '';
+        const nameClean = neighborAP.name.replace('AP-', '');
+        const bandDetails = [];
+
+        if (r24 && neighborAP.radios.ng && r24.channel && neighborAP.radios.ng.channel) {
+          const isConflict = Math.abs(r24.channel - neighborAP.radios.ng.channel) <= 4;
+          bandDetails.push(`2.4G: <span class="${isConflict ? 'conflict-neighbor-text' : ''}">Ch ${neighborAP.radios.ng.channel}</span>`);
+        }
+        if (r5 && neighborAP.radios.na && r5.channel && neighborAP.radios.na.channel) {
+          const isConflict = r5.channel === neighborAP.radios.na.channel;
+          bandDetails.push(`5G: <span class="${isConflict ? 'conflict-neighbor-text' : ''}">Ch ${neighborAP.radios.na.channel}</span>`);
+        }
+
+        if (bandDetails.length === 0) return '';
+        return `<div style="font-size:0.72rem; margin-bottom:2px; color:var(--text-muted);"><strong>${escapeHtml(nameClean)}</strong> (${bandDetails.join(', ')})</div>`;
+      }).filter(Boolean).join('');
+
+      if (neighborItems) {
+        neighborsCell = `<div style="max-height:80px; overflow-y:auto; padding-right:4px;">${neighborItems}</div>`;
+      }
+    }
+
     let cell24Ch, cell5Ch;
     
     if (sandboxModeEnabled) {
@@ -1280,6 +1399,40 @@ function renderOptimalGrid() {
 
     const cellMinRssi = `<span class="${isMinRssiDrift ? 'text-drift' : ''}">${curMinRssi ? `${curMinRssi} dBm` : 'Disabled'} ➔ <strong>-75 dBm</strong></span>`;
 
+    let impactCell = '<span class="text-dark">Not simulated</span>';
+    if (proximityConfig) {
+      const activeOverlaps = apOverlapsMap[ap.mac];
+      const totalOverlaps = (activeOverlaps?.ng || 0) + (activeOverlaps?.na || 0);
+
+      let resolvedCount = 0;
+      if (sandboxModeEnabled && rawApiData && Array.isArray(rawApiData.aps)) {
+        const rawAP = rawApiData.aps.find(a => a.mac === ap.mac);
+        if (rawAP) {
+          let rawNgOverlaps = 0;
+          let rawNaOverlaps = 0;
+          proximityConfig.neighbors.forEach(neighborMac => {
+            const rawNeighbor = rawApiData.aps.find(a => a.mac === neighborMac);
+            if (!rawNeighbor) return;
+            if (rawAP.radios?.ng && rawNeighbor.radios?.ng && rawAP.radios.ng.channel && rawNeighbor.radios.ng.channel) {
+              if (Math.abs(rawAP.radios.ng.channel - rawNeighbor.radios.ng.channel) <= 4) rawNgOverlaps++;
+            }
+            if (rawAP.radios?.na && rawNeighbor.radios?.na && rawAP.radios.na.channel && rawNeighbor.radios.na.channel) {
+              if (rawAP.radios.na.channel === rawNeighbor.radios.na.channel) rawNaOverlaps++;
+            }
+          });
+          resolvedCount = (rawNgOverlaps + rawNaOverlaps) - totalOverlaps;
+        }
+      }
+
+      if (resolvedCount > 0) {
+        impactCell = `<span class="badge-impact-cleared"><i data-lucide="sparkles" style="width:12px;height:12px;display:inline-block;vertical-align:middle;margin-right:4px;"></i>✨ Cleared ${resolvedCount} Conflicts!</span>`;
+      } else if (totalOverlaps === 0) {
+        impactCell = `<span class="badge-impact-low"><i data-lucide="check" style="width:12px;height:12px;display:inline-block;vertical-align:middle;margin-right:4px;"></i>⚡ Low Impact (0 overlaps)</span>`;
+      } else {
+        impactCell = `<span class="badge-impact-high"><i data-lucide="alert-octagon" style="width:12px;height:12px;display:inline-block;vertical-align:middle;margin-right:4px;"></i>⚠️ ${totalOverlaps} overlap${totalOverlaps > 1 ? 's' : ''} caused!</span>`;
+      }
+    }
+
     const auditBadge = hasDrift
       ? `<span class="badge-drift"><i data-lucide="alert-triangle" style="width:12px; height:12px; display:inline-block; vertical-align:middle; margin-right:4px;"></i>DRIFT DETECTED</span>`
       : `<span class="badge-ok"><i data-lucide="check" style="width:12px; height:12px; display:inline-block; vertical-align:middle; margin-right:4px;"></i>OPTIMAL</span>`;
@@ -1298,11 +1451,13 @@ function renderOptimalGrid() {
       <td style="font-weight:700; color:white;">${escapeHtml(ap.name)}</td>
       <td><span style="font-size:0.75rem; background-color:rgba(255,255,255,0.03); padding:4px 8px; border-radius:4px;">${floor}</span></td>
       <td><span style="font-size:0.72rem; color:var(--text-muted); text-transform:uppercase;">${ap.model}</span></td>
+      <td>${neighborsCell}</td>
       <td>${cell24Ch}</td>
       <td>${cell24Power}</td>
       <td>${cell5Ch}</td>
       <td>${cell5Power}</td>
       <td>${cellMinRssi}</td>
+      <td>${impactCell}</td>
       <td>${auditBadge}</td>
     `;
     tableBody.appendChild(tr);
@@ -2107,8 +2262,6 @@ function setAutoRefresh(seconds) {
   if (sel) sel.value = String(secs);
 }
 
-<<<<<<< Updated upstream
-=======
 // ============================================================
 //  RF NEIGHBORHOOD PROXIMITY GRAPH & INTERACTIVE SANDBOX ENGINE
 // ============================================================
@@ -2177,123 +2330,139 @@ const AP_PROXIMITY_NEIGHBORS = {
  */
 function runRFPropagationEngine() {
   if (!rawApiData) return;
-  
-  console.log('[RF Simulation] Executing cascade propagation math...');
-  
-  // 1. Deep clone raw apiData payload
+
   apiData = JSON.parse(JSON.stringify(rawApiData));
-  
   const cascadeLogs = [];
-  
-  // 2. Apply active inline dropdown override tunings
-  apiData.aps.forEach(ap => {
+
+  const apArray = Array.isArray(apiData.aps) ? apiData.aps : [];
+  const channelsRadios = Array.isArray(apiData.channels?.radios) ? apiData.channels.radios : [];
+  const allClients = Array.isArray(apiData.clients?.allClients) ? apiData.clients.allClients : [];
+
+  const apMap = {};
+  apArray.forEach(ap => {
+    apMap[ap.mac] = ap;
+  });
+
+  const radioByApBand = {};
+  channelsRadios.forEach(radio => {
+    radioByApBand[`${radio.apMac}:${radio.radio}`] = radio;
+  });
+
+  // 1) Apply sandbox overrides
+  apArray.forEach(ap => {
     const override = sandboxOverrides[ap.mac];
-    if (override) {
-      if (override.ng !== undefined && ap.radios.ng) {
-        ap.radios.ng.channel = override.ng;
-      }
-      if (override.na !== undefined && ap.radios.na) {
-        ap.radios.na.channel = override.na;
-      }
-    }
-  });
-  
-  // Create lookup table
-  const mutatedAps = {};
-  apiData.aps.forEach(ap => {
-    mutatedAps[ap.mac] = ap;
-  });
-  
-  // 3. Reset all AP radio airtime load to baseline (self congestion)
-  apiData.aps.forEach(ap => {
-    const config = AP_PROXIMITY_NEIGHBORS[ap.mac];
-    if (!config) return;
-    
+    if (!override) return;
+
     ['ng', 'na'].forEach(band => {
-      const radio = ap.radios[band];
-      if (!radio) return;
-      
-      const baselineLoad = Math.max(12, (radio.cu_self_rx || 0) + (radio.cu_self_tx || 0));
-      radio.cu_total = baselineLoad;
-      radio.cci_count = 0;
+      const target = ap.radios?.[band];
+      const overrideVal = override[band];
+      if (target && overrideVal !== undefined) {
+        target.channel = overrideVal;
+      }
+      const listRadio = radioByApBand[`${ap.mac}:${band}`];
+      if (listRadio && overrideVal !== undefined) {
+        listRadio.channel = overrideVal;
+      }
     });
   });
-  
-  // 4. Calculate mutual Co-Channel interference contention penalties
+
+  // 2) Reset every AP radio to isolated baseline
+  apArray.forEach(ap => {
+    ['ng', 'na'].forEach(band => {
+      const radio = ap.radios?.[band];
+      if (!radio) return;
+
+      const baselineLoad = Math.max(12, (Number(radio.cu_self_rx) || 0) + (Number(radio.cu_self_tx) || 0));
+      radio.cu_total = baselineLoad;
+      radio.cci_count = 0;
+
+      const listRadio = radioByApBand[`${ap.mac}:${band}`];
+      if (listRadio) {
+        listRadio.cu_total = baselineLoad;
+        listRadio.cci_count = 0;
+      }
+    });
+  });
+
+  // 3) Apply mutual neighbor contention penalties
   const checkedPairs = new Set();
-  
   Object.keys(AP_PROXIMITY_NEIGHBORS).forEach(apMac1 => {
     const config1 = AP_PROXIMITY_NEIGHBORS[apMac1];
-    const ap1 = mutatedAps[apMac1];
+    const ap1 = apMap[apMac1];
     if (!ap1) return;
-    
+
     config1.neighbors.forEach(apMac2 => {
-      const ap2 = mutatedAps[apMac2];
+      const ap2 = apMap[apMac2];
       if (!ap2) return;
-      
+
       const pairKey = [apMac1, apMac2].sort().join('-');
       if (checkedPairs.has(pairKey)) return;
       checkedPairs.add(pairKey);
-      
+
       ['ng', 'na'].forEach(band => {
-        const r1 = ap1.radios[band];
-        const r2 = ap2.radios[band];
+        const r1 = ap1.radios?.[band];
+        const r2 = ap2.radios?.[band];
         if (!r1 || !r2 || !r1.channel || !r2.channel) return;
-        
+
         let overlaps = false;
         if (band === 'ng') {
-          // 2.4 GHz: channels overlap if their absolute difference is <= 4
           overlaps = Math.abs(r1.channel - r2.channel) <= 4;
         } else {
-          // 5 GHz: channels overlap if they share the exact primary channel frequency
           overlaps = r1.channel === r2.channel;
         }
-        
-        if (overlaps) {
-          // Increment CCI counters
-          r1.cci_count = (r1.cci_count || 0) + 1;
-          r2.cci_count = (r2.cci_count || 0) + 1;
-          
-          // Apply mutual +18% airtime load penalty
-          r1.cu_total = Math.min(100, r1.cu_total + 18);
-          r2.cu_total = Math.min(100, r2.cu_total + 18);
-          
+        if (!overlaps) return;
+
+        r1.cci_count = (r1.cci_count || 0) + 1;
+        r2.cci_count = (r2.cci_count || 0) + 1;
+        r1.cu_total = Math.min(100, (Number(r1.cu_total) || 0) + 18);
+        r2.cu_total = Math.min(100, (Number(r2.cu_total) || 0) + 18);
+
+        const listR1 = radioByApBand[`${apMac1}:${band}`];
+        const listR2 = radioByApBand[`${apMac2}:${band}`];
+        if (listR1) {
+          listR1.cci_count = r1.cci_count;
+          listR1.cu_total = r1.cu_total;
+        }
+        if (listR2) {
+          listR2.cci_count = r2.cci_count;
+          listR2.cu_total = r2.cu_total;
+        }
+
+        if (cascadeLogs.length < 12) {
           const bandLabel = band === 'ng' ? '2.4 GHz' : '5 GHz';
           cascadeLogs.push({
             type: 'conflict',
-            msg: `Overlap between adjacent rooms <strong>${ap1.name}</strong> and <strong>${ap2.name}</strong> (Ch ${r1.channel} / ${r2.channel}) on ${bandLabel}. Mutual <strong>+18%</strong> contention penalty applied!`
+            msg: `Adjacent overlap: <strong>${escapeHtml(ap1.name)}</strong> ↔ <strong>${escapeHtml(ap2.name)}</strong> on ${bandLabel} (Ch ${r1.channel}/${r2.channel}) triggered <strong>+18%</strong> contention.`
           });
         }
       });
     });
   });
-  
-  // 5. Update connected client experience satisfaction metrics
-  let criticalClientsCount = 0;
-  let warningClientsCount = 0;
-  
-  const clientsList = apiData.clients.allClients || [];
-  clientsList.forEach(client => {
-    const parentAp = mutatedAps[client.apMac];
+
+  // 4) Cascade to clients
+  allClients.forEach(client => {
+    const parentAp = apMap[client.apMac];
     if (!parentAp) return;
-    
-    const band = client.band === '2.4G' ? 'ng' : 'na';
-    const radio = parentAp.radios[band];
+
+    const band = String(client.band || '').startsWith('2.4') ? 'ng' : 'na';
+    const radio = parentAp.radios?.[band];
     if (!radio) return;
-    
+
     client.channel = radio.channel;
-    
-    // Recalculate iPad Experience Satisfaction based on host AP load and tx_retries
-    const txRetriesPct = client.txRetriesPct || 5;
+    client.apCongestion = radio.cu_total;
+
+    const txRetriesPct = Number(client.txRetriesPct) || 0;
     const clientSatisfaction = Math.max(10, Math.round(100 - radio.cu_total * 0.7 - txRetriesPct * 0.5));
     client.satisfaction = clientSatisfaction;
-    
+
     if (clientSatisfaction < 70) {
       client.severity = 'critical';
       client.warning = 'Severe AP Channel Utilization';
-      criticalClientsCount++;
-      
-      if (cascadeLogs.length < 8 && client.hostname.toLowerCase().includes('ipad')) {
+      if (!Array.isArray(client.flags)) client.flags = [];
+      if (!client.flags.includes('Severe AP Channel Utilization')) {
+        client.flags.push('Severe AP Channel Utilization');
+      }
+      if (cascadeLogs.length < 8 && String(client.hostname || '').toLowerCase().includes('ipad')) {
         cascadeLogs.push({
           type: 'client',
           msg: `Client <strong>${escapeHtml(client.hostname)}</strong> on <strong>${escapeHtml(parentAp.name)}</strong> satisfaction dropped to <span class="text-critical">${clientSatisfaction}%</span> due to congestion.`
@@ -2302,17 +2471,27 @@ function runRFPropagationEngine() {
     } else if (clientSatisfaction < 85) {
       client.severity = 'warning';
       client.warning = 'Elevated Airtime Retries';
-      warningClientsCount++;
     } else {
-      client.severity = 'success';
+      client.severity = 'healthy';
       client.warning = '';
     }
   });
-  
+
+  // Sync primary Apple client list from allClients
+  if (Array.isArray(apiData.clients?.clients)) {
+    apiData.clients.clients = apiData.clients.clients.map(client => {
+      const updated = allClients.find(c => c.mac === client.mac);
+      return updated ? { ...client, ...updated } : client;
+    }).sort((a, b) => {
+      const score = { critical: 3, warning: 2, healthy: 1 };
+      return (score[b.severity] - score[a.severity]) || String(a.hostname).localeCompare(String(b.hostname));
+    });
+  }
+
   // Synchronize clients in topDownloaders
   if (apiData.clients.topDownloaders) {
     apiData.clients.topDownloaders.forEach(client => {
-      const match = clientsList.find(c => c.mac === client.mac);
+      const match = allClients.find(c => c.mac === client.mac);
       if (match) {
         client.channel = match.channel;
         client.satisfaction = match.satisfaction;
@@ -2320,44 +2499,71 @@ function runRFPropagationEngine() {
       }
     });
   }
-  
-  // 6. Recalculate global metrics and aggregates in apiData
+
+  if (Array.isArray(apiData.clients?.strugglingAll)) {
+    apiData.clients.strugglingAll = allClients
+      .filter(c => c.severity !== 'healthy')
+      .sort((a, b) => {
+        const score = { critical: 3, warning: 2, healthy: 1 };
+        return score[b.severity] - score[a.severity];
+      });
+  }
+
+  // 5) Recompute channel/radio health aggregates
   let sumLoad24 = 0, count24 = 0;
   let sumLoad5 = 0, count5 = 0;
   let warningRadiosCount = 0;
   let congestedRadiosCount = 0;
-  
-  apiData.aps.forEach(ap => {
-    if (ap.radios.ng) {
-      sumLoad24 += ap.radios.ng.cu_total;
+  const channelCounts24 = {};
+  const channelCounts5 = {};
+
+  channelsRadios.forEach(r => {
+    if (r.radio === 'ng') {
+      sumLoad24 += r.cu_total;
       count24++;
-      if (ap.radios.ng.cu_total > 70) congestedRadiosCount++;
-      else if (ap.radios.ng.cu_total > 50) warningRadiosCount++;
-    }
-    if (ap.radios.na) {
-      sumLoad5 += ap.radios.na.cu_total;
+      channelCounts24[String(r.channel)] = (channelCounts24[String(r.channel)] || 0) + 1;
+    } else if (r.radio === 'na') {
+      sumLoad5 += r.cu_total;
       count5++;
-      if (ap.radios.na.cu_total > 70) congestedRadiosCount++;
-      else if (ap.radios.na.cu_total > 50) warningRadiosCount++;
+      channelCounts5[String(r.channel)] = (channelCounts5[String(r.channel)] || 0) + 1;
+    }
+
+    if (r.cu_total > 75 || r.cci_count > 12) {
+      r.health = 'critical';
+      congestedRadiosCount++;
+    } else if (r.cu_total > 50 || r.cci_count > 4 || r.tx_retries_pct > 25) {
+      r.health = 'warning';
+      warningRadiosCount++;
+    } else {
+      r.health = 'healthy';
     }
   });
-  
-  if (apiData.overview) {
-    apiData.overview.avgChannelLoad24 = Math.round(sumLoad24 / (count24 || 1));
-    apiData.overview.avgChannelLoad5 = Math.round(sumLoad5 / (count5 || 1));
-    apiData.overview.congestedRadiosCount = congestedRadiosCount;
-    apiData.overview.warningRadiosCount = warningRadiosCount;
-    
-    const appleClients = clientsList.filter(c => c.hostname.toLowerCase().includes('ipad'));
-    if (appleClients.length > 0) {
-      const avgHealth = Math.round(appleClients.reduce((acc, c) => acc + c.satisfaction, 0) / appleClients.length);
-      apiData.overview.avgIpadHealth = avgHealth;
-      apiData.overview.criticalCount = appleClients.filter(c => c.satisfaction < 70).length;
-      apiData.overview.warningCount = appleClients.filter(c => c.satisfaction >= 70 && c.satisfaction < 85).length;
-    }
+
+  if (apiData.channels?.summary) {
+    apiData.channels.summary.avgUtil24 = Math.round(sumLoad24 / (count24 || 1));
+    apiData.channels.summary.avgUtil5 = Math.round(sumLoad5 / (count5 || 1));
+    apiData.channels.summary.channelCounts24 = channelCounts24;
+    apiData.channels.summary.channelCounts5 = channelCounts5;
+    apiData.channels.summary.congestedRadiosCount = congestedRadiosCount;
+    apiData.channels.summary.warningRadiosCount = warningRadiosCount;
   }
-  
-  // Render cascade logs into the side panel
+
+  if (apiData.clients?.summary && Array.isArray(apiData.clients.clients)) {
+    const appleClients = apiData.clients.clients;
+    const criticalCount = appleClients.filter(c => c.severity === 'critical').length;
+    const warningCount = appleClients.filter(c => c.severity === 'warning').length;
+    const healthyCount = appleClients.filter(c => c.severity === 'healthy').length;
+    const healthIndex = appleClients.length
+      ? Math.round(appleClients.reduce((sum, c) => sum + (Number(c.satisfaction) || 0), 0) / appleClients.length)
+      : 100;
+
+    apiData.clients.summary.criticalCount = criticalCount;
+    apiData.clients.summary.warningCount = warningCount;
+    apiData.clients.summary.healthyCount = healthyCount;
+    apiData.clients.summary.healthIndex = healthIndex;
+  }
+
+  // 6) Render cascade logs
   const cascadeLogList = document.getElementById('cascade-log-list');
   if (cascadeLogList) {
     if (cascadeLogs.length === 0) {
@@ -2440,6 +2646,12 @@ function toggleSandboxMode(enabled) {
   
   if (enabled) {
     runRFPropagationEngine();
+    const activeOverridesCount = Object.keys(sandboxOverrides || {}).length;
+    if (activeOverridesCount > 0) {
+      showToast(`Interactive Sandbox enabled. ${activeOverridesCount} manual sandbox RF channel overrides are active.`, 'warning');
+    } else {
+      showToast('Interactive Sandbox enabled. Channel changes now run real-time RF cascade simulation.', 'info');
+    }
   } else {
     if (rawApiData) {
       apiData = JSON.parse(JSON.stringify(rawApiData));
@@ -2453,6 +2665,7 @@ function toggleSandboxMode(enabled) {
         </div>
       `;
     }
+    showToast('Interactive Sandbox disabled. Dashboard now reflects live controller telemetry only.', 'info');
   }
   
   renderAllTabs();
@@ -2619,5 +2832,3 @@ function renderAllTabs() {
     window.lucide.createIcons();
   }
 }
-
->>>>>>> Stashed changes
