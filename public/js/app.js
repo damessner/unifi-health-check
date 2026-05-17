@@ -40,6 +40,13 @@ const KBPS_PER_MBPS = 1000;
 /** DFS 5 GHz channel numbers (channels 52–144) */
 const DFS_CHANNELS_5GHZ = ['52','56','60','64','100','104','108','112','116','120','124','128','132','136','140','144'];
 
+/** RF health thresholds used for simulated radio severity calculation */
+const RADIO_CRITICAL_CU_THRESHOLD = 75;
+const RADIO_CRITICAL_CCI_THRESHOLD = 12;
+const RADIO_WARNING_CU_THRESHOLD = 50;
+const RADIO_WARNING_CCI_THRESHOLD = 4;
+const RADIO_WARNING_TX_RETRIES_THRESHOLD = 25;
+
 
 // DOMContentLoaded Initialization
 document.addEventListener('DOMContentLoaded', () => {
@@ -2528,10 +2535,10 @@ function runRFPropagationEngine() {
       channelCounts5[String(r.channel)] = (channelCounts5[String(r.channel)] || 0) + 1;
     }
 
-    if (r.cu_total > 75 || r.cci_count > 12) {
+    if (r.cu_total > RADIO_CRITICAL_CU_THRESHOLD || r.cci_count > RADIO_CRITICAL_CCI_THRESHOLD) {
       r.health = 'critical';
       congestedRadiosCount++;
-    } else if (r.cu_total > 50 || r.cci_count > 4 || r.tx_retries_pct > 25) {
+    } else if (r.cu_total > RADIO_WARNING_CU_THRESHOLD || r.cci_count > RADIO_WARNING_CCI_THRESHOLD || r.tx_retries_pct > RADIO_WARNING_TX_RETRIES_THRESHOLD) {
       r.health = 'warning';
       warningRadiosCount++;
     } else {
