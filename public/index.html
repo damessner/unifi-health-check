@@ -14,6 +14,9 @@
   <!-- Lucide Icons via CDN -->
   <script src="https://unpkg.com/lucide@latest"></script>
   
+  <!-- Chart.js for historical trend charts -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js" integrity="sha384-OLBgp1GsljhM2TJ+sbHjaiH9txEUvgdDTAzHv2P24donTt6/529l+9Ua0vFImLlb" crossorigin="anonymous"></script>
+  
   <!-- CSS Stylesheet -->
   <link rel="stylesheet" href="css/style.css">
 </head>
@@ -42,6 +45,11 @@
           <i data-lucide="layout-dashboard"></i>
           <span>Network Overview</span>
         </button>
+        <button class="nav-btn" id="btn-speeds" onclick="switchTab('speeds')">
+          <i data-lucide="gauge"></i>
+          <span>Speed Monitor</span>
+          <span class="badge-count" id="badge-speeds-struggling" style="display: none;">0</span>
+        </button>
         <button class="nav-btn" id="btn-channels" onclick="switchTab('channels')">
           <i data-lucide="bar-chart-2"></i>
           <span>Channel Analyzer</span>
@@ -55,6 +63,10 @@
           <i data-lucide="tablet"></i>
           <span>iPad Diagnostics</span>
           <span class="badge-count" id="badge-ipad-critical" style="display: none;">0</span>
+        </button>
+        <button class="nav-btn" id="btn-history" onclick="switchTab('history')">
+          <i data-lucide="trending-up"></i>
+          <span>History &amp; Trends</span>
         </button>
         <button class="nav-btn" id="btn-optimizer" onclick="switchTab('optimizer')">
           <i data-lucide="zap"></i>
@@ -85,7 +97,7 @@
         </div>
         <div class="header-actions">
           <span class="last-updated-text" id="last-updated">Last updated: Just now</span>
-          <span class="sync-mode-disclaimer" style="font-size:0.75rem; color:#f59e0b; background:rgba(245, 158, 11, 0.05); padding:4px 10px; border-radius:12px; border:1px dashed rgba(245, 158, 11, 0.2); display:inline-flex; align-items:center; gap:6px; margin-right:8px;"><i data-lucide="info" style="width:12px; height:12px;"></i>Manual Sync Mode Only</span>
+          <span id="sync-mode-label" class="sync-mode-disclaimer" style="font-size:0.75rem; color:#f59e0b; background:rgba(245, 158, 11, 0.05); padding:4px 10px; border-radius:12px; border:1px dashed rgba(245, 158, 11, 0.2); display:inline-flex; align-items:center; gap:6px; margin-right:8px;"><i data-lucide="info" style="width:12px; height:12px;"></i><span id="sync-mode-text">Manual Sync Only</span></span>
           <button class="btn-refresh" id="refresh-button" onclick="fetchData(false, true)">
             <i data-lucide="refresh-cw"></i>
             <span>Get Data</span>
@@ -214,7 +226,240 @@
         </div>
       </section>
       
-      <!-- TAB 2: CHANNEL ANALYZER -->
+      <!-- TAB 2: SPEED MONITOR -->
+      <section class="tab-content" id="tab-speeds">
+
+        <!-- Speed Metric Cards -->
+        <div class="metrics-grid">
+          <div class="metric-card speed-card">
+            <div class="metric-header">
+              <span class="metric-title">Total Download Rate</span>
+              <div class="metric-icon bg-teal-alpha"><i data-lucide="arrow-down-circle"></i></div>
+            </div>
+            <div class="metric-body">
+              <div class="speed-gauge-wrap">
+                <div class="speed-gauge" id="gauge-download">
+                  <div class="gauge-inner">
+                    <span class="gauge-val" id="speed-dl-val">0</span>
+                    <span class="gauge-unit">Mbps</span>
+                  </div>
+                </div>
+              </div>
+              <p class="metric-sub" id="speed-dl-sub">Aggregate AP→Client TX rate</p>
+            </div>
+          </div>
+
+          <div class="metric-card speed-card">
+            <div class="metric-header">
+              <span class="metric-title">Total Upload Rate</span>
+              <div class="metric-icon bg-purple-alpha"><i data-lucide="arrow-up-circle"></i></div>
+            </div>
+            <div class="metric-body">
+              <div class="speed-gauge-wrap">
+                <div class="speed-gauge" id="gauge-upload">
+                  <div class="gauge-inner">
+                    <span class="gauge-val" id="speed-ul-val">0</span>
+                    <span class="gauge-unit">Mbps</span>
+                  </div>
+                </div>
+              </div>
+              <p class="metric-sub" id="speed-ul-sub">Aggregate Client→AP RX rate</p>
+            </div>
+          </div>
+
+          <div class="metric-card">
+            <div class="metric-header">
+              <span class="metric-title">All Active Clients</span>
+              <div class="metric-icon bg-blue-alpha"><i data-lucide="users"></i></div>
+            </div>
+            <div class="metric-body">
+              <h3 class="metric-value" id="speed-client-count">0</h3>
+              <p class="metric-sub" id="speed-avg-dl">Avg: — Mbps/client DL</p>
+            </div>
+          </div>
+
+          <div class="metric-card" id="capacity-overview-card">
+            <div class="metric-header">
+              <span class="metric-title">Capacity (800-client target)</span>
+              <div class="metric-icon bg-warning-alpha"><i data-lucide="users-round"></i></div>
+            </div>
+            <div class="metric-body">
+              <h3 class="metric-value" id="capacity-count">0<span style="font-size:0.45em; color:var(--text-dark)">&nbsp;/ 800</span></h3>
+              <p class="metric-sub" id="capacity-readiness-label" class="text-warning">Calculating readiness…</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Two-column: Top Downloaders + Struggling Log -->
+        <div class="speeds-layout">
+
+          <!-- Top Clients by Speed -->
+          <div class="glass-card">
+            <div class="card-header flex-header">
+              <div style="display:flex; align-items:center; gap:10px;">
+                <div class="header-icon bg-teal-alpha"><i data-lucide="zap"></i></div>
+                <h3>Top Clients by TX Rate</h3>
+              </div>
+              <button onclick="exportClientsCSV()" class="btn-export" title="Export all clients to CSV">
+                <i data-lucide="download"></i> Export CSV
+              </button>
+            </div>
+            <div class="card-body overflow-x">
+              <table class="premium-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Client</th>
+                    <th>Access Point</th>
+                    <th>Band</th>
+                    <th>Download ↓</th>
+                    <th>Upload ↑</th>
+                    <th>Signal</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="top-downloaders-body"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Struggling Clients Event Log -->
+          <div class="glass-card">
+            <div class="card-header flex-header">
+              <div style="display:flex; align-items:center; gap:10px;">
+                <div class="header-icon bg-rose-alpha"><i data-lucide="scroll-text"></i></div>
+                <h3>Struggling Clients Log</h3>
+              </div>
+              <button onclick="clearEventsLog()" class="btn-subtle" title="Clear event log">
+                <i data-lucide="trash-2"></i> Clear
+              </button>
+            </div>
+            <div class="card-body">
+              <div class="events-log-container" id="events-log">
+                <div class="log-empty-state">
+                  <i data-lucide="check-circle-2"></i>
+                  <p>No struggling clients detected. Log will populate when issues arise.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Per-AP Throughput Breakdown -->
+        <div class="glass-card mt-4">
+          <div class="card-header">
+            <div class="header-icon bg-blue-alpha"><i data-lucide="bar-chart-horizontal"></i></div>
+            <h3>Per-AP Throughput Breakdown</h3>
+          </div>
+          <div class="card-body">
+            <div id="ap-throughput-chart"></div>
+          </div>
+        </div>
+
+        <!-- Capacity Planning Widget -->
+        <div class="glass-card mt-4">
+          <div class="card-header">
+            <div class="header-icon bg-warning-alpha"><i data-lucide="calendar-clock"></i></div>
+            <h3>Capacity Planning — 800-Client Event Readiness Check</h3>
+          </div>
+          <div class="card-body">
+            <div id="capacity-widget"></div>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- TAB 3: HISTORY & TRENDS -->
+      <section class="tab-content" id="tab-history">
+
+        <!-- Controls bar -->
+        <div class="glass-card mb-4">
+          <div class="card-body" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; padding:16px 20px;">
+            <div>
+              <span style="color:var(--text-main); font-size:0.9rem;">Samples stored: </span>
+              <strong id="history-sample-count" style="color:var(--primary-light);">0</strong>
+              <span class="text-muted" style="font-size:0.78rem; margin-left:8px;">(Ring buffer resets on server restart. Refresh data to add samples.)</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+              <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                <span class="text-muted" style="font-size:0.85rem;">Auto-refresh:</span>
+                <select id="auto-refresh-interval" onchange="setAutoRefresh(this.value)" style="background:var(--bg-card); color:var(--text-main); border:1px solid var(--border-glass); border-radius:8px; padding:5px 10px; font-size:0.85rem; cursor:pointer;">
+                  <option value="0">Off</option>
+                  <option value="30">Every 30 s</option>
+                  <option value="60">Every 60 s</option>
+                  <option value="300">Every 5 min</option>
+                </select>
+              </label>
+              <button onclick="clearHistory()" class="btn-subtle" title="Clear all stored history">
+                <i data-lucide="trash-2"></i> Clear History
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Utilization + Clients Charts Row -->
+        <div class="history-charts-grid">
+          <div class="glass-card">
+            <div class="card-header">
+              <div class="header-icon bg-rose-alpha"><i data-lucide="activity"></i></div>
+              <h3>Channel Utilization Trend</h3>
+            </div>
+            <div class="card-body chart-container">
+              <canvas id="chart-utilization"></canvas>
+            </div>
+          </div>
+
+          <div class="glass-card">
+            <div class="card-header">
+              <div class="header-icon bg-blue-alpha"><i data-lucide="users"></i></div>
+              <h3>Connected Clients Trend</h3>
+            </div>
+            <div class="card-body chart-container">
+              <canvas id="chart-clients"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <!-- Speed Trend Chart -->
+        <div class="glass-card mt-4">
+          <div class="card-header">
+            <div class="header-icon bg-teal-alpha"><i data-lucide="zap"></i></div>
+            <h3>Network Speed Trend (Mbps)</h3>
+          </div>
+          <div class="card-body chart-container chart-wide">
+            <canvas id="chart-speeds"></canvas>
+          </div>
+        </div>
+
+        <!-- History Data Table -->
+        <div class="glass-card mt-4">
+          <div class="card-header flex-header">
+            <h3>Historical Data Log</h3>
+            <span class="text-muted" style="font-size:0.8rem;">Latest 20 readings</span>
+          </div>
+          <div class="card-body overflow-x">
+            <table class="premium-table">
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>All Clients</th>
+                  <th>Apple Clients</th>
+                  <th>2.4 GHz Util %</th>
+                  <th>5 GHz Util %</th>
+                  <th>Total DL (Mbps)</th>
+                  <th>Total UL (Mbps)</th>
+                  <th>Critical</th>
+                  <th>Warning</th>
+                </tr>
+              </thead>
+              <tbody id="history-table-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- TAB 4: CHANNEL ANALYZER -->
       <section class="tab-content" id="tab-channels">
         <div class="analysis-description glass-card mb-4">
           <h3>Understanding Channel Congestion</h3>

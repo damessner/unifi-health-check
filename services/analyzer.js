@@ -273,6 +273,77 @@ class NetworkAnalyzer {
     const healthyCount = ipadDiagnostics.filter(d => d.severity === 'healthy').length;
     const healthIndex = Math.round((healthyCount + warningCount * 0.5) / totalCount * 100);
 
+    // === All-client processing for speed & struggling metrics ===
+    const allClientDiags = clients.map(c => {
+      const diag = {
+        mac: c.mac,
+        ip: c.ip || 'No IP',
+        hostname: c.hostname || c.name || 'Unnamed Client',
+        oui: c.oui || '',
+        isApple: (c.oui || '').toLowerCase().includes('apple'),
+        satisfaction: c.satisfaction !== undefined ? c.satisfaction : (c.experience_score || 100),
+        signal: c.signal || -100,
+        txRateKbps: c.tx_rate || 0,
+        rxRateKbps: c.rx_rate || 0,
+        txRetriesPct: c.wifi_tx_retries_percentage || 0,
+        channel: c.channel || 0,
+        band: c.radio === 'ng' ? '2.4GHz' : '5GHz',
+        apMac: c.ap_mac,
+        apName: apMap[c.ap_mac] || 'Unknown AP',
+        uptime: c.uptime || 0,
+        flags: [],
+        severity: 'healthy'
+      };
+
+      if (diag.signal < -80) {
+        diag.flags.push('Weak Signal');
+        diag.severity = 'critical';
+      } else if (diag.signal < -72) {
+        diag.flags.push('Low Signal');
+        if (diag.severity !== 'critical') diag.severity = 'warning';
+      }
+
+      if (diag.satisfaction < 70) {
+        diag.flags.push('Poor Experience');
+        diag.severity = 'critical';
+      } else if (diag.satisfaction < 85) {
+        diag.flags.push('Degraded Experience');
+        if (diag.severity !== 'critical') diag.severity = 'warning';
+      }
+
+      if (diag.txRetriesPct > 40) {
+        diag.flags.push('High TX Retries');
+        if (diag.severity !== 'critical') diag.severity = 'critical';
+      } else if (diag.txRetriesPct > 20) {
+        diag.flags.push('Elevated TX Retries');
+        if (diag.severity === 'healthy') diag.severity = 'warning';
+      }
+
+      if (diag.band === '2.4GHz') {
+        diag.flags.push('2.4GHz Band');
+        if (diag.severity === 'healthy') diag.severity = 'warning';
+      }
+
+      return diag;
+    });
+
+    // Aggregate speed metrics (kbps → sum across all clients)
+    const totalDownloadKbps = clients.reduce((sum, c) => sum + (c.tx_rate || 0), 0);
+    const totalUploadKbps = clients.reduce((sum, c) => sum + (c.rx_rate || 0), 0);
+
+    // Top downloaders (top 10 by tx_rate)
+    const topDownloaders = [...allClientDiags]
+      .sort((a, b) => b.txRateKbps - a.txRateKbps)
+      .slice(0, 10);
+
+    // All struggling clients across all vendors
+    const strugglingAll = allClientDiags
+      .filter(c => c.severity !== 'healthy')
+      .sort((a, b) => {
+        const score = { critical: 3, warning: 2, healthy: 1 };
+        return score[b.severity] - score[a.severity];
+      });
+
     return {
       summary: {
         totalAppleClients: appleClients.length,
@@ -280,13 +351,19 @@ class NetworkAnalyzer {
         criticalCount,
         warningCount,
         healthyCount,
-        healthIndex
+        healthIndex,
+        totalAllClients: clients.length,
+        totalDownloadKbps,
+        totalUploadKbps
       },
       clients: ipadDiagnostics.sort((a, b) => {
         // Sort critical first, then warning, then healthy
         const score = { 'critical': 3, 'warning': 2, 'healthy': 1 };
         return score[b.severity] - score[a.severity] || (a.hostname.localeCompare(b.hostname));
-      })
+      }),
+      allClients: allClientDiags,
+      topDownloaders,
+      strugglingAll
     };
   }
 }

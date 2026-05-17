@@ -11,12 +11,41 @@ const PORT = config.server.port;
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 
+/** Threshold in ms below which a data fetch is considered 'fresh from the controller' */
+const FRESH_DATA_THRESHOLD_MS = 2000;
+
 // In-memory cache for UniFi data to ensure high-speed dashboard responsiveness
 const cache = {
   devices: null,
   clients: null,
   lastFetch: 0
 };
+
+// In-memory history ring buffer for trend analysis (max 60 samples)
+const historyBuffer = [];
+const HISTORY_MAX_SAMPLES = 60;
+
+/**
+ * Push a snapshot into the history ring buffer after a fresh data fetch.
+ */
+function pushHistorySnapshot(channels, clients) {
+  const snapshot = {
+    timestamp: Date.now(),
+    totalAllClients: clients.summary.totalAllClients,
+    totalAppleClients: clients.summary.totalAppleClients,
+    avgUtil24: channels.summary.avgUtil24,
+    avgUtil5: channels.summary.avgUtil5,
+    totalDownloadMbps: Math.round(clients.summary.totalDownloadKbps / 1000),
+    totalUploadMbps: Math.round(clients.summary.totalUploadKbps / 1000),
+    criticalCount: clients.summary.criticalCount,
+    warningCount: clients.summary.warningCount,
+    congestedRadiosCount: channels.summary.congestedRadiosCount
+  };
+  historyBuffer.push(snapshot);
+  if (historyBuffer.length > HISTORY_MAX_SAMPLES) {
+    historyBuffer.shift();
+  }
+}
 
 /**
  * Helper to get cached or fresh UniFi data.
@@ -42,6 +71,17 @@ async function getFreshData(bypassCache = false) {
 
   return { devices, clients };
 }
+
+/**
+ * API: Get historical metric snapshots for trend analysis
+ */
+app.get('/api/history', (req, res) => {
+  res.json({
+    success: true,
+    samples: historyBuffer,
+    count: historyBuffer.length
+  });
+});
 
 /**
  * API: Get connection and health status
@@ -77,6 +117,11 @@ app.get('/api/diagnostics', async (req, res) => {
     
     const channelAnalysis = analyzer.analyzeChannels(devices);
     const clientAnalysis = analyzer.analyzeClients(clients, devices);
+
+    // Only push to history when data is fresh from the controller (not served from cache)
+    if (Date.now() - cache.lastFetch < FRESH_DATA_THRESHOLD_MS) {
+      pushHistorySnapshot(channelAnalysis, clientAnalysis);
+    }
 
     res.json({
       success: true,
