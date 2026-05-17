@@ -46,6 +46,17 @@ const RADIO_CRITICAL_CCI_THRESHOLD = 12;
 const RADIO_WARNING_CU_THRESHOLD = 50;
 const RADIO_WARNING_CCI_THRESHOLD = 4;
 const RADIO_WARNING_TX_RETRIES_THRESHOLD = 25;
+const CACHE_AGE_THRESHOLD_SECONDS = 2;
+const SANDBOX_OVERRIDE_NOTICE_DELAY_MS = 800;
+const MIN_BASELINE_RADIO_LOAD = 12;
+const NEIGHBOR_CONTENTION_PENALTY_PCT = 18;
+const CLIENT_SATISFACTION_CU_WEIGHT = 0.7;
+const CLIENT_SATISFACTION_RETRY_WEIGHT = 0.5;
+const MIN_CLIENT_SATISFACTION = 10;
+const CLIENT_SATISFACTION_CRITICAL_THRESHOLD = 70;
+const CLIENT_SATISFACTION_WARNING_THRESHOLD = 85;
+const MAX_CASCADE_LOG_ENTRIES = 12;
+const MAX_CLIENT_CASCADE_LOG_ENTRIES = 8;
 
 
 // DOMContentLoaded Initialization
@@ -283,7 +294,7 @@ async function fetchData(isSilent = false, force = false) {
     const secondsAgo = Number.isFinite(serverTimestamp)
       ? Math.max(0, Math.round((nowTs - serverTimestamp) / 1000))
       : 0;
-    const isCached = secondsAgo > 2;
+    const isCached = secondsAgo > CACHE_AGE_THRESHOLD_SECONDS;
     const activeOverridesCount = Object.keys(sandboxOverrides || {}).length;
 
     if (force) {
@@ -297,7 +308,7 @@ async function fetchData(isSilent = false, force = false) {
     if (sandboxModeEnabled && activeOverridesCount > 0) {
       setTimeout(() => {
         showToast(`Notice: ${activeOverridesCount} manual sandbox RF channel overrides are currently active.`, 'warning');
-      }, 800);
+      }, SANDBOX_OVERRIDE_NOTICE_DELAY_MS);
     }
     
     // Process sandbox mapping or direct deep clone
@@ -1077,7 +1088,7 @@ function showToast(message, type = 'info', duration = 5000) {
     <i data-lucide="${iconName}" class="toast-icon"></i>
     <div class="toast-content">
       <div class="toast-title">${titleText}</div>
-      <div class="toast-message">${message}</div>
+      <div class="toast-message">${escapeHtml(String(message))}</div>
     </div>
   `;
 
@@ -2379,7 +2390,7 @@ function runRFPropagationEngine() {
       const radio = ap.radios?.[band];
       if (!radio) return;
 
-      const baselineLoad = Math.max(12, (Number(radio.cu_self_rx) || 0) + (Number(radio.cu_self_tx) || 0));
+      const baselineLoad = Math.max(MIN_BASELINE_RADIO_LOAD, (Number(radio.cu_self_rx) || 0) + (Number(radio.cu_self_tx) || 0));
       radio.cu_total = baselineLoad;
       radio.cci_count = 0;
 
@@ -2421,8 +2432,8 @@ function runRFPropagationEngine() {
 
         r1.cci_count = (r1.cci_count || 0) + 1;
         r2.cci_count = (r2.cci_count || 0) + 1;
-        r1.cu_total = Math.min(100, (Number(r1.cu_total) || 0) + 18);
-        r2.cu_total = Math.min(100, (Number(r2.cu_total) || 0) + 18);
+        r1.cu_total = Math.min(100, (Number(r1.cu_total) || 0) + NEIGHBOR_CONTENTION_PENALTY_PCT);
+        r2.cu_total = Math.min(100, (Number(r2.cu_total) || 0) + NEIGHBOR_CONTENTION_PENALTY_PCT);
 
         const listR1 = radioByApBand[`${apMac1}:${band}`];
         const listR2 = radioByApBand[`${apMac2}:${band}`];
@@ -2435,11 +2446,11 @@ function runRFPropagationEngine() {
           listR2.cu_total = r2.cu_total;
         }
 
-        if (cascadeLogs.length < 12) {
+        if (cascadeLogs.length < MAX_CASCADE_LOG_ENTRIES) {
           const bandLabel = band === 'ng' ? '2.4 GHz' : '5 GHz';
           cascadeLogs.push({
             type: 'conflict',
-            msg: `Adjacent overlap: <strong>${escapeHtml(ap1.name)}</strong> ↔ <strong>${escapeHtml(ap2.name)}</strong> on ${bandLabel} (Ch ${r1.channel}/${r2.channel}) triggered <strong>+18%</strong> contention.`
+            msg: `Adjacent overlap: <strong>${escapeHtml(ap1.name)}</strong> ↔ <strong>${escapeHtml(ap2.name)}</strong> on ${bandLabel} (Ch ${r1.channel}/${r2.channel}) triggered <strong>+${NEIGHBOR_CONTENTION_PENALTY_PCT}%</strong> contention.`
           });
         }
       });
@@ -2459,23 +2470,26 @@ function runRFPropagationEngine() {
     client.apCongestion = radio.cu_total;
 
     const txRetriesPct = Number(client.txRetriesPct) || 0;
-    const clientSatisfaction = Math.max(10, Math.round(100 - radio.cu_total * 0.7 - txRetriesPct * 0.5));
+    const clientSatisfaction = Math.max(
+      MIN_CLIENT_SATISFACTION,
+      Math.round(100 - radio.cu_total * CLIENT_SATISFACTION_CU_WEIGHT - txRetriesPct * CLIENT_SATISFACTION_RETRY_WEIGHT)
+    );
     client.satisfaction = clientSatisfaction;
 
-    if (clientSatisfaction < 70) {
+    if (clientSatisfaction < CLIENT_SATISFACTION_CRITICAL_THRESHOLD) {
       client.severity = 'critical';
       client.warning = 'Severe AP Channel Utilization';
       if (!Array.isArray(client.flags)) client.flags = [];
       if (!client.flags.includes('Severe AP Channel Utilization')) {
         client.flags.push('Severe AP Channel Utilization');
       }
-      if (cascadeLogs.length < 8 && String(client.hostname || '').toLowerCase().includes('ipad')) {
+      if (cascadeLogs.length < MAX_CLIENT_CASCADE_LOG_ENTRIES && String(client.hostname || '').toLowerCase().includes('ipad')) {
         cascadeLogs.push({
           type: 'client',
           msg: `Client <strong>${escapeHtml(client.hostname)}</strong> on <strong>${escapeHtml(parentAp.name)}</strong> satisfaction dropped to <span class="text-critical">${clientSatisfaction}%</span> due to congestion.`
         });
       }
-    } else if (clientSatisfaction < 85) {
+    } else if (clientSatisfaction < CLIENT_SATISFACTION_WARNING_THRESHOLD) {
       client.severity = 'warning';
       client.warning = 'Elevated Airtime Retries';
     } else {
