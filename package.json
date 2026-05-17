@@ -4,7 +4,8 @@
   "description": "UniFi Network Health Check & Channel Utilization Analyzer",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "validate-env": "node scripts/validate-env.js",
+    "start": "npm run validate-env && node server.js"
   },
   "keywords": [
     "unifi",

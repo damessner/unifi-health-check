@@ -7,7 +7,7 @@ WORKDIR /usr/src/app
 COPY package*.json ./
 
 # Install only production dependencies (clean install)
-RUN npm ci --only=production
+RUN npm ci --omit=dev
 
 # Stage 2: Minimal runtime image
 FROM node:20-alpine
@@ -16,11 +16,11 @@ ENV NODE_ENV=production
 WORKDIR /usr/src/app
 
 # Copy only installed node_modules and metadata from the builder
-COPY --from=builder /usr/src/app/node_modules ./node_modules
-COPY --from=builder /usr/src/app/package*.json ./
+COPY --from=builder --chown=node:node /usr/src/app/node_modules ./node_modules
+COPY --from=builder --chown=node:node /usr/src/app/package*.json ./
 
 # Copy application source code
-COPY . .
+COPY --chown=node:node . .
 
 # Run under a non-root system user for container security hardening
 USER node

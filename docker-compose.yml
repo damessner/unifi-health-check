@@ -7,6 +7,15 @@ services:
       dockerfile: Dockerfile
     container_name: unifi-health-check
     restart: unless-stopped
+    user: "node"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 150
     ports:
       # Exposes the service on a unique and configurable host port.
       # By default, it maps to port 3843 on the host, preventing conflicts.

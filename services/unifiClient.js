@@ -10,7 +10,7 @@ class UnifiClient {
     this.site = config.unifi.site;
     this.cookie = null;
     this.agent = new https.Agent({
-      rejectUnauthorized: false
+      rejectUnauthorized: !config.unifi.allowSelfSignedCert
     });
   }
 
@@ -65,6 +65,10 @@ class UnifiClient {
    * Authenticate with the UniFi controller.
    */
   async login() {
+    if (process.env.MOCK_MODE === 'true') {
+      return true;
+    }
+
     console.log(`[UniFi] Attempting authentication on https://${this.host}:${this.port}/api/login`);
     try {
       const res = await this._request({

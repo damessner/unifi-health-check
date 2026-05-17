@@ -12,11 +12,16 @@ A modern, high-fidelity real-time network health diagnostics and channel analysi
 
 For Proxmox Debian LXC containers or standard Debian hosts, use this complete, zero-dependency auto-installer. 
 
-Simply log in to your Debian LXC container terminal as **root** and run:
+Avoid `curl | bash` direct execution. Download, inspect, and then run:
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/damessner/unifi-health-check/main/setup-lxc.sh)"
+curl -fsSLo /tmp/setup-lxc.sh https://raw.githubusercontent.com/damessner/unifi-health-check/main/setup-lxc.sh
+chmod 700 /tmp/setup-lxc.sh
+less /tmp/setup-lxc.sh
+bash /tmp/setup-lxc.sh
 ```
+
+For stronger integrity guarantees, pin to a commit URL and verify SHA-256 before execution.
 
 ### 🔍 What the Auto-Installer Does:
 1. **Adaptive Prerequisite Setup**: Detects and installs `curl`, `git`, and standard certificates if they are missing.
@@ -25,7 +30,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/damessner/unifi-health-c
    - If **present**: Skips installation and validates that your Docker Compose V2 plugin is active and fully functional.
 3. **Proxmox Nesting Validation**: Performs a daemon check and issues alert instructions if Proxmox Nesting is disabled.
 4. **Repository Deployment**: Clones or updates the project code inside `/opt/unifi-health-check`.
-5. **Interactive Configuration Wizard**: Prompts you for your UniFi Controller details and port preferences. In non-interactive terminals, it gracefully falls back to default values.
+5. **Interactive Configuration Wizard**: Prompts you for your UniFi Controller details and API key. In non-interactive mode, required values must be provided via environment variables.
 6. **Container Orchestration**: Builds and runs the Node.js diagnostics container on a conflict-free, custom external port (**`3843`**).
 7. **Success Summary**: Prints local container IP access URLs and helpful commands to manage your setup.
 
@@ -33,7 +38,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/damessner/unifi-health-c
 
 ## 🐳 Running on a Debian LXC Already Having Docker
 
-If your container already has Docker running, running the one-liner is still the **recommended and easiest method**. The script is built defensively:
+If your container already has Docker running, running the installer script is still the recommended method. The script is built defensively:
 - It **does not overwrite** or reinstall Docker if it is already installed.
 - It **retains any existing `.env` configuration file** instead of prompting you again.
 - It simply ensures the latest repository changes are checked out and executes a clean rebuild.
@@ -60,13 +65,18 @@ docker compose up -d --build
 
 The application is configured using a `.env` file located in the root of the project directory.
 
-| Variable | Default Value | Description |
+| Variable | Example Value | Description |
 |---|---|---|
-| `UNIFI_HOST` | `172.16.0.200` | Hostname or IP address of your UniFi Controller. |
-| `UNIFI_PORT` | `8443` | The controller API Port (typically `8443` or `443`). |
-| `UNIFI_USER` | `observer` | Username for the UniFi account. |
-| `UNIFI_PASS` | `3^K@nP:!$@Hc;,P` | Password for the UniFi account (supports special characters). |
+| `UNIFI_URL` | `https://controller.example.internal:8443` | Full HTTPS URL for your UniFi Controller API endpoint. |
+| `UNIFI_USER` | `changeme` | UniFi API username (provide securely; do not commit real values). |
+| `UNIFI_PASS` | `changeme` | UniFi API password (provide securely; do not commit real values). |
 | `UNIFI_SITE` | `default` | UniFi Site Name/ID (typically `default`). |
+| `API_KEY` | `changeme` | Required API key for all `/api/*` endpoints (pass in `X-API-Key` header). |
+| `API_AUTH_ENABLED` | `true` | Keep API protection enabled in production. |
+| `RATE_LIMIT_WINDOW_SEC` | `60` | API rate limit rolling window length in seconds. |
+| `RATE_LIMIT_MAX_REQUESTS` | `60` | Maximum API calls allowed per client per window. |
+| `FORCE_REFRESH_MIN_INTERVAL_SEC` | `30` | Minimum interval between `?force=true` requests to prevent abuse. |
+| `UNIFI_ALLOW_SELF_SIGNED_CERT` | `false` | Keep `false` unless you explicitly trust a self-signed controller cert. |
 | `PORT` | `3000` | Internal Node.js server port (do not modify). |
 | `HOST_PORT` | `3843` | External port exposed on the host machine to access the UI. |
 | `CACHE_EXPIRY_SEC` | `15` | Caching duration (in seconds) of controller data to limit load. |
@@ -98,9 +108,9 @@ Navigate to `/opt/unifi-health-check` (or your manual installation folder) to ex
 
 ## 📡 API Endpoints
 
-The internal Node.js server exposes these diagnostic endpoints:
+The internal Node.js server exposes these diagnostic endpoints (all require `X-API-Key`):
 - **`GET /api/health`**: Tests connection status to the UniFi controller and verifies credentials.
-- **`GET /api/diagnostics`**: Compiles AP radio congestion, active clients, and Apple device metrics. Use `?force=true` to bypass cache.
+- **`GET /api/diagnostics`**: Compiles AP radio congestion, active clients, and Apple device metrics. `?force=true` is rate-limited and throttled.
 - **`GET /api/history`**: Returns the ring-buffered timeline trends (up to 60 snapshot samples).
 
 ---

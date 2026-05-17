@@ -5,8 +5,10 @@
 # This script automates the installation of Docker, Git, configurations,
 # and starts the service container on a unique port (3843) inside Debian LXC.
 #
-# One-liner execution:
-#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/damessner/unifi-health-check/main/setup-lxc.sh)"
+# Safer execution:
+#   curl -fsSLo /tmp/setup-lxc.sh https://raw.githubusercontent.com/damessner/unifi-health-check/main/setup-lxc.sh
+#   chmod 700 /tmp/setup-lxc.sh
+#   bash /tmp/setup-lxc.sh
 # =========================================================================
 
 # Colors for modern terminal logs
@@ -54,7 +56,7 @@ fi
 NON_INTERACTIVE=false
 if [ ! -t 0 ] || [ "$DEBIAN_FRONTEND" = "noninteractive" ]; then
     NON_INTERACTIVE=true
-    log_info "Running in non-interactive mode. Default values will be applied automatically."
+    log_info "Running in non-interactive mode. Required values must be supplied via environment variables."
 fi
 
 # 3. Check and Install Prerequisite: Curl
@@ -158,23 +160,42 @@ else
     echo -e "\n${BOLD}${MAGENTA}--- Configuration Wizard ---${NC}"
     echo -e "Press [Enter] to keep the default values.\n"
     
-    prompt_var "UniFi Controller Host/IP" "172.16.0.200" "CONF_HOST"
-    prompt_var "UniFi Controller Port   " "8443" "CONF_PORT"
-    prompt_var "UniFi Username          " "observer" "CONF_USER"
-    prompt_var "UniFi Password          " '3^K@nP:!$@Hc;,P' "CONF_PASS"
+    prompt_var "UniFi Controller URL    " "https://controller.example.internal:8443" "CONF_URL"
+    prompt_var "UniFi Username          " "" "CONF_USER"
+    prompt_var "UniFi Password          " "" "CONF_PASS"
+    prompt_var "API Key (for /api access)" "" "CONF_API_KEY"
     prompt_var "UniFi Site Name         " "default" "CONF_SITE"
     prompt_var "Dashboard External Port " "3843" "CONF_HOST_PORT"
     
     echo -e "${BOLD}${MAGENTA}----------------------------${NC}\n"
     
+    if [ "$NON_INTERACTIVE" = "true" ]; then
+        CONF_URL="${UNIFI_URL:-}"
+        CONF_USER="${UNIFI_USER:-}"
+        CONF_PASS="${UNIFI_PASS:-}"
+        CONF_API_KEY="${API_KEY:-}"
+        CONF_SITE="${UNIFI_SITE:-default}"
+        CONF_HOST_PORT="${HOST_PORT:-3843}"
+    fi
+
+    if [ -z "$CONF_URL" ] || [ -z "$CONF_USER" ] || [ -z "$CONF_PASS" ] || [ -z "$CONF_API_KEY" ]; then
+        log_error "UNIFI_URL, UNIFI_USER, UNIFI_PASS, and API_KEY must be provided."
+        exit 1
+    fi
+
     # Generate the .env file
     cat <<EOF > "$ENV_FILE"
 # Generated on $(date)
-UNIFI_HOST=$CONF_HOST
-UNIFI_PORT=$CONF_PORT
+UNIFI_URL=$CONF_URL
 UNIFI_USER=$CONF_USER
 UNIFI_PASS=$CONF_PASS
 UNIFI_SITE=$CONF_SITE
+API_KEY=$CONF_API_KEY
+API_AUTH_ENABLED=true
+RATE_LIMIT_WINDOW_SEC=60
+RATE_LIMIT_MAX_REQUESTS=60
+FORCE_REFRESH_MIN_INTERVAL_SEC=30
+UNIFI_ALLOW_SELF_SIGNED_CERT=false
 PORT=3000
 CACHE_EXPIRY_SEC=15
 HOST_PORT=$CONF_HOST_PORT

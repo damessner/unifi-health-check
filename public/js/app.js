@@ -57,6 +57,43 @@ const CLIENT_SATISFACTION_CRITICAL_THRESHOLD = 70;
 const CLIENT_SATISFACTION_WARNING_THRESHOLD = 85;
 const MAX_CASCADE_LOG_ENTRIES = 12;
 const MAX_CLIENT_CASCADE_LOG_ENTRIES = 8;
+const API_KEY_STORAGE_KEY = 'unifi_api_key';
+
+function getApiKeyFromStorage() {
+  const stored = localStorage.getItem(API_KEY_STORAGE_KEY);
+  if (stored && stored.trim()) {
+    return stored.trim();
+  }
+
+  const entered = window.prompt('Enter API key for this dashboard session:');
+  if (entered && entered.trim()) {
+    const sanitized = entered.trim();
+    localStorage.setItem(API_KEY_STORAGE_KEY, sanitized);
+    return sanitized;
+  }
+
+  return '';
+}
+
+async function secureApiFetch(url) {
+  const apiKey = getApiKeyFromStorage();
+  if (!apiKey) {
+    throw new Error('API key is required to call backend endpoints.');
+  }
+
+  const res = await fetch(url, {
+    headers: {
+      'X-API-Key': apiKey
+    }
+  });
+
+  if (res.status === 401) {
+    localStorage.removeItem(API_KEY_STORAGE_KEY);
+    throw new Error('Unauthorized. Please re-enter a valid API key.');
+  }
+
+  return res;
+}
 
 
 // DOMContentLoaded Initialization
@@ -280,7 +317,7 @@ async function fetchData(isSilent = false, force = false) {
 
   try {
     const url = force ? '/api/diagnostics?force=true' : '/api/diagnostics';
-    const res = await fetch(url);
+    const res = await secureApiFetch(url);
     if (!res.ok) throw new Error(`HTTP status error: ${res.status}`);
     
     const payload = await res.json();
@@ -1990,7 +2027,7 @@ let chartSpeeds = null;
  */
 async function fetchAndRenderHistory() {
   try {
-    const res = await fetch('/api/history');
+    const res = await secureApiFetch('/api/history');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (data.success && data.samples) {

@@ -24,6 +24,70 @@ const cache = {
 // In-memory history ring buffer for trend analysis (max 60 samples)
 const historyBuffer = [];
 const HISTORY_MAX_SAMPLES = 60;
+const apiRequestWindow = new Map();
+let lastForceRefreshAt = 0;
+
+function getClientIdentifier(req) {
+  const forwardedFor = req.headers['x-forwarded-for'];
+  if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
+    return forwardedFor.split(',')[0].trim();
+  }
+  return req.socket.remoteAddress || 'unknown-client';
+}
+
+function requireApiKey(req, res, next) {
+  if (!config.api.authEnabled) {
+    return next();
+  }
+
+  const provided = req.get('x-api-key');
+  if (!provided || provided !== config.api.apiKey) {
+    return res.status(401).json({
+      success: false,
+      error: 'Unauthorized'
+    });
+  }
+
+  return next();
+}
+
+function applyRateLimit(req, res, next) {
+  const now = Date.now();
+  const clientId = getClientIdentifier(req);
+  const windowStart = now - config.api.rateLimitWindowMs;
+  const recent = (apiRequestWindow.get(clientId) || []).filter((ts) => ts > windowStart);
+  recent.push(now);
+  apiRequestWindow.set(clientId, recent);
+
+  if (recent.length > config.api.rateLimitMaxRequests) {
+    return res.status(429).json({
+      success: false,
+      error: 'Rate limit exceeded'
+    });
+  }
+
+  return next();
+}
+
+function guardForceRefresh(req, res, next) {
+  if (req.query.force !== 'true') {
+    return next();
+  }
+
+  const now = Date.now();
+  const elapsed = now - lastForceRefreshAt;
+  if (elapsed < config.server.forceRefreshMinIntervalMs) {
+    return res.status(429).json({
+      success: false,
+      error: `Force refresh is temporarily throttled. Retry in ${Math.ceil((config.server.forceRefreshMinIntervalMs - elapsed) / 1000)} seconds.`
+    });
+  }
+
+  lastForceRefreshAt = now;
+  return next();
+}
+
+app.use('/api', requireApiKey, applyRateLimit);
 
 /**
  * Push a snapshot into the history ring buffer after a fresh data fetch.
@@ -108,7 +172,7 @@ app.get('/api/health', async (req, res) => {
 /**
  * API: Get aggregated diagnostic analysis for channels and clients
  */
-app.get('/api/diagnostics', async (req, res) => {
+app.get('/api/diagnostics', guardForceRefresh, async (req, res) => {
   try {
     const force = req.query.force === 'true';
     const { devices, clients } = await getFreshData(force);
