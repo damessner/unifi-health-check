@@ -82,7 +82,17 @@ else
     rm get-docker.sh
     
     # Enable and start docker daemon
-    systemctl enable --now docker
+    systemctl enable docker
+    systemctl start docker || true
+
+    # Wait up to 15 seconds for Docker daemon to become ready
+    log_info "Waiting for Docker daemon to become ready..."
+    for i in {1..15}; do
+        if docker info > /dev/null 2>&1; then
+            break
+        fi
+        sleep 1
+    done
     log_success "Docker installed and enabled successfully."
 fi
 
@@ -99,9 +109,18 @@ fi
 
 # 5. Check if Docker daemon is responsive (crucial check inside Proxmox LXCs)
 if ! docker info >/dev/null 2>&1; then
-    log_error "Docker is installed but the service is not running or accessible."
-    log_error "If running in a Proxmox LXC container, make sure that 'Nesting' is enabled!"
-    log_error "To fix: Go to Proxmox -> Container -> Options -> Features -> Edit -> Tick Nesting."
+    log_error "Docker daemon is not running or accessible inside this LXC container."
+    log_error ""
+    log_error "This is almost always caused by missing AppArmor overrides on the Proxmox host."
+    log_error "Run these commands on your PROXMOX HOST (not inside this container):"
+    log_error ""
+    log_error "  CTID=\$(pct list | grep unifi-health-check | awk '{print \$1}')"
+    log_error "  echo 'lxc.apparmor.profile: unconfined' >> /etc/pve/lxc/\${CTID}.conf"
+    log_error "  echo 'lxc.mount.entry: /dev/null sys/module/apparmor/parameters/enabled none bind 0 0' >> /etc/pve/lxc/\${CTID}.conf"
+    log_error "  pct reboot \${CTID}"
+    log_error ""
+    log_error "Then re-run this installer inside the container:"
+    log_error "  bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/damessner/unifi-health-check/main/setup-lxc.sh)\""
     exit 1
 fi
 

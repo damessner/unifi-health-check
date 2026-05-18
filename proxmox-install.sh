@@ -145,7 +145,25 @@ ROOT_PASSWORD=${GENERATED_ROOT_PASS}
 EOF
 chmod 600 "$CREDENTIALS_FILE"
 
-# 7. Start the container and wait for IP
+# 7. Apply LXC security overrides required for nested Docker virtualization
+#    Without these, Docker daemon fails inside unprivileged containers on recent
+#    Debian/Proxmox hosts due to AppArmor CVE-2025-52881 containerd restrictions.
+log_info "Applying AppArmor bypass for nested Docker inside LXC..."
+cat >> "/etc/pve/lxc/${NEXT_VMID}.conf" << 'LXCEOF'
+lxc.apparmor.profile: unconfined
+lxc.mount.entry: /dev/null sys/module/apparmor/parameters/enabled none bind 0 0
+LXCEOF
+
+# If Proxmox storage is ZFS-based, also bind /dev/fuse for overlay2 compatibility
+if zfs list > /dev/null 2>&1; then
+    log_info "ZFS storage detected. Adding /dev/fuse mount for overlay2 compatibility..."
+    echo 'lxc.mount.entry: /dev/fuse dev/fuse none bind,create=file 0 0' >> "/etc/pve/lxc/${NEXT_VMID}.conf"
+    log_success "ZFS fuse mount entry added."
+fi
+
+log_success "LXC security overrides applied successfully."
+
+# 8. Start the container and wait for IP
 log_info "Starting LXC container..."
 pct start "$NEXT_VMID"
 
@@ -169,7 +187,7 @@ else
     log_success "Container network is online! IP Address: ${BOLD}${CYAN}${CONTAINER_IP}${NC}"
 fi
 
-# 8. Deploy dependencies and application inside LXC
+# 9. Deploy dependencies and application inside LXC
 log_info "Executing Docker & Application Auto-Installer inside the container..."
 log_info "This will automate the setup of Docker, Docker-compose, pull the code, and launch on port 2943."
 
