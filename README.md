@@ -141,6 +141,11 @@ The internal Node.js server exposes these diagnostic endpoints:
 - **`GET /api/health`**: Tests connection status to the UniFi controller and verifies credentials.
 - **`GET /api/diagnostics`**: Compiles AP radio congestion, active clients, and Apple device metrics. Use `?force=true` to bypass cache.
 - **`GET /api/history`**: Returns persisted SQLite timeline trends. Supports `?limit=<n>` for chart/export sizing.
+- **`GET /api/teacher/status`**: Returns a simplified teacher-facing readiness summary, sticky-client watchlist, and recent reports.
+- **`GET /api/teacher/reports`**: Returns recent teacher incident reports from SQLite.
+- **`POST /api/teacher/report`**: Stores a teacher-submitted classroom Wi-Fi incident report.
+
+The simplified read-only teacher portal is available at **`/teacher`**.
 
 If `API_TOKEN` is configured, include `x-api-token: <token>` for all `/api/*` requests.
 
@@ -152,6 +157,7 @@ If `API_TOKEN` is configured, include `x-api-token: <token>` for all `/api/*` re
 - Sandbox topology is generated dynamically from live AP telemetry (no hardcoded room/device map).
 - Sandbox model caps visualization/simulation to the first 60 AP endpoints per fetch.
 - The optimization dashboard can export a multi-sheet XLSX workbook with separate 2.4 GHz and 5 GHz recommendations plus butterfly-impact summaries.
+- Teachers now have a simplified `/teacher` view with room readiness, sticky-client warnings, and a live incident form backed by SQLite.
 - For public exposure, run behind TLS and reverse-proxy auth in addition to `API_TOKEN`.
 
 ---
@@ -166,8 +172,8 @@ This project is open-source and licensed under the [MIT License](LICENSE).
 
 Current implementation integrity (verified in this repository):
 
-- ✅ Implemented today: real-time diagnostics API, RF/channel analyzer, iPad/Apple client diagnostics, optimization guidance UI, XLSX optimization export, SQLite-backed history persistence, speed/capacity widgets.
-- ⚠️ Partially implemented: optimizer/sandbox simulation UX (no backend graph-coloring solver yet).
-- ❌ Not implemented yet: webhook/email alerting, sticky-client roaming diagnostics, classroom SLA grouping, safe write-back controller actions, airtime fairness auditor, DHCP pool exhaustion predictor, SQLite persistent time-series, rogue AP radar, teacher portal/reporting endpoint.
+- ✅ Implemented today: real-time diagnostics API, RF/channel analyzer, iPad/Apple client diagnostics, optimization guidance UI, XLSX optimization export, SQLite-backed history persistence, speed/capacity widgets, teacher portal/report logging.
+- ⚠️ Partially implemented: optimizer/sandbox simulation UX (no backend graph-coloring solver yet), sticky-client / room-readiness summaries.
+- ❌ Not implemented yet: webhook/email alerting, safe write-back controller actions, airtime fairness auditor, DHCP pool exhaustion predictor, rogue AP radar.
 
 Planned advanced extensions are documented in **`/STRATEGIC_ROADMAP.md`**.

@@ -94,6 +94,112 @@ function buildApsModel(channelAnalysis) {
   return Object.values(map);
 }
 
+function buildTeacherStatus(channelAnalysis, clientAnalysis) {
+  const clientList = clientAnalysis.allClients || clientAnalysis.clients || [];
+  const problematicClients = clientList.filter((client) => client.severity !== 'healthy');
+  const stickyClients = clientList
+    .filter((client) => (
+      (client.signal <= -75 && client.roamCount <= 1) ||
+      client.roamCount >= 5 ||
+      (client.band === '2.4GHz' && client.signal <= -72)
+    ))
+    .sort((a, b) => {
+      if ((b.roamCount || 0) !== (a.roamCount || 0)) {
+        return (b.roamCount || 0) - (a.roamCount || 0);
+      }
+      return (a.signal || -100) - (b.signal || -100);
+    })
+    .slice(0, 6)
+    .map((client) => ({
+      hostname: client.hostname,
+      apName: client.apName,
+      signal: client.signal,
+      band: client.band,
+      roamCount: client.roamCount,
+      severity: client.severity,
+      recommendation: client.recommendation
+    }));
+
+  const locationScores = {};
+  (channelAnalysis.radios || []).forEach((radio) => {
+    const key = radio.apName || radio.apMac || 'Unknown Area';
+    if (!locationScores[key]) {
+      locationScores[key] = {
+        name: key,
+        criticalSignals: 0,
+        warningSignals: 0,
+        clientIssues: 0
+      };
+    }
+
+    if (radio.health === 'critical') {
+      locationScores[key].criticalSignals += 1;
+    } else if (radio.health === 'warning') {
+      locationScores[key].warningSignals += 1;
+    }
+  });
+
+  problematicClients.forEach((client) => {
+    const key = client.apName || 'Unknown Area';
+    if (!locationScores[key]) {
+      locationScores[key] = {
+        name: key,
+        criticalSignals: 0,
+        warningSignals: 0,
+        clientIssues: 0
+      };
+    }
+    locationScores[key].clientIssues += 1;
+  });
+
+  const locations = Object.values(locationScores)
+    .map((location) => {
+      const severityScore = location.criticalSignals * 3 + location.warningSignals * 2 + location.clientIssues;
+      let readiness = 'green';
+      if (location.criticalSignals > 0 || location.clientIssues >= 3) {
+        readiness = 'red';
+      } else if (location.warningSignals > 0 || location.clientIssues > 0) {
+        readiness = 'yellow';
+      }
+
+      return {
+        ...location,
+        readiness,
+        severityScore
+      };
+    })
+    .sort((a, b) => b.severityScore - a.severityScore || a.name.localeCompare(b.name))
+    .slice(0, 8);
+
+  const criticalSignals = channelAnalysis.summary.congestedRadiosCount || 0;
+  const criticalClients = clientAnalysis.summary.criticalCount || 0;
+  const warningSignals = channelAnalysis.summary.warningRadiosCount || 0;
+  const warningClients = clientAnalysis.summary.warningCount || 0;
+
+  let overallStatus = 'green';
+  let headline = 'School Wi-Fi looks healthy right now.';
+  if (criticalSignals > 0 || criticalClients > 0) {
+    overallStatus = 'red';
+    headline = 'Some rooms currently have Wi-Fi issues that may impact lessons.';
+  } else if (warningSignals > 0 || warningClients > 0) {
+    overallStatus = 'yellow';
+    headline = 'Wi-Fi is usable, but a few rooms need attention soon.';
+  }
+
+  const readinessScore = Math.max(
+    0,
+    100 - criticalSignals * 12 - criticalClients * 4 - warningSignals * 5 - warningClients * 2
+  );
+
+  return {
+    overallStatus,
+    headline,
+    readinessScore,
+    stickyClients,
+    locations
+  };
+}
+
 /**
  * Helper to get cached or fresh UniFi data.
  */
@@ -141,6 +247,82 @@ app.get('/api/history', (req, res) => {
         count: historyBuffer.length
       });
     });
+});
+
+app.get('/api/teacher/status', async (req, res) => {
+  try {
+    const { devices, clients } = await getFreshData(false);
+    const channelAnalysis = analyzer.analyzeChannels(devices);
+    const clientAnalysis = analyzer.analyzeClients(clients, devices);
+    const recentReports = await historyStore.getTeacherReports(8);
+
+    res.json({
+      success: true,
+      timestamp: Date.now(),
+      status: buildTeacherStatus(channelAnalysis, clientAnalysis),
+      recentReports
+    });
+  } catch (err) {
+    console.error('[Teacher API] Failed to build teacher status:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to load teacher portal status.',
+      details: err.message
+    });
+  }
+});
+
+app.get('/api/teacher/reports', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit, 10) || 20;
+    const reports = await historyStore.getTeacherReports(limit);
+    res.json({
+      success: true,
+      reports
+    });
+  } catch (err) {
+    console.error('[Teacher API] Failed to load teacher reports:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to load teacher reports.',
+      details: err.message
+    });
+  }
+});
+
+app.post('/api/teacher/report', async (req, res) => {
+  try {
+    const reporterName = String(req.body?.reporterName || '').trim().slice(0, 80);
+    const location = String(req.body?.location || '').trim().slice(0, 120);
+    const issueType = String(req.body?.issueType || '').trim().slice(0, 60);
+    const message = String(req.body?.message || '').trim().slice(0, 500);
+
+    if (!location || !issueType || !message) {
+      return res.status(400).json({
+        success: false,
+        error: 'Location, issue type, and message are required.'
+      });
+    }
+
+    const storedReport = await historyStore.addTeacherReport({
+      reporterName: reporterName || 'Anonymous Teacher',
+      location,
+      issueType,
+      message
+    });
+
+    res.status(201).json({
+      success: true,
+      report: storedReport
+    });
+  } catch (err) {
+    console.error('[Teacher API] Failed to store teacher report:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to store the teacher report.',
+      details: err.message
+    });
+  }
 });
 
 /**
@@ -202,6 +384,14 @@ app.get('/api/diagnostics', async (req, res) => {
   }
 });
 
+/**
+ * API: Export channel optimization + client report as XLSX
+ * Uses the butterfly-aware iterative greedy optimizer.
+ */
+app.get('/teacher', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'teacher.html'));
+});
+
 // Serve index.html for all other routes to support client-side SPA routing if needed
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
@@ -217,6 +407,7 @@ async function startServer() {
     console.log(`[History] SQLite persistence ready (${persistedHistory.count} stored samples).`);
   } catch (err) {
     console.warn(`[History] SQLite persistence unavailable: ${err.message}`);
+    console.warn('[History] Operating in memory-only mode until SQLite becomes available.');
   }
 
   try {

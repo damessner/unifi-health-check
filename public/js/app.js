@@ -2180,6 +2180,10 @@ function downloadBlob(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
+function exportXlsx() {
+  exportOptimizationXlsx();
+}
+
 async function exportOptimizationXlsx() {
   if (!apiData || !apiData.channels || !apiData.clients) {
     alert('No optimization data available to export. Please fetch data first.');

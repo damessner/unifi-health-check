@@ -7,49 +7,77 @@ class HistoryStore {
   constructor() {
     this.db = null;
     this.enabled = false;
+    this.initializing = null;
   }
 
   async init() {
     if (this.db) {
       return true;
     }
+    if (this.initializing) {
+      return this.initializing;
+    }
 
-    const dbPath = config.server.historyDbPath;
-    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    this.initializing = (async () => {
+      const dbPath = config.server.historyDbPath;
+      fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
-    this.db = await new Promise((resolve, reject) => {
-      const db = new sqlite3.Database(dbPath, (err) => {
-        if (err) {
-          reject(err);
-          return;
-        }
-        resolve(db);
+      this.db = await new Promise((resolve, reject) => {
+        const db = new sqlite3.Database(dbPath, (err) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve(db);
+        });
       });
-    });
 
-    await this.run(`
-      CREATE TABLE IF NOT EXISTS history_snapshots (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        timestamp INTEGER NOT NULL,
-        total_all_clients INTEGER NOT NULL,
-        total_apple_clients INTEGER NOT NULL,
-        avg_util_24 INTEGER NOT NULL,
-        avg_util_5 INTEGER NOT NULL,
-        total_download_mbps INTEGER NOT NULL,
-        total_upload_mbps INTEGER NOT NULL,
-        critical_count INTEGER NOT NULL,
-        warning_count INTEGER NOT NULL,
-        congested_radios_count INTEGER NOT NULL
-      )
-    `);
+      await this.run(`
+        CREATE TABLE IF NOT EXISTS history_snapshots (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          timestamp INTEGER NOT NULL,
+          total_all_clients INTEGER NOT NULL,
+          total_apple_clients INTEGER NOT NULL,
+          avg_util_24 INTEGER NOT NULL,
+          avg_util_5 INTEGER NOT NULL,
+          total_download_mbps INTEGER NOT NULL,
+          total_upload_mbps INTEGER NOT NULL,
+          critical_count INTEGER NOT NULL,
+          warning_count INTEGER NOT NULL,
+          congested_radios_count INTEGER NOT NULL
+        )
+      `);
 
-    await this.run(`
-      CREATE INDEX IF NOT EXISTS idx_history_snapshots_timestamp
-      ON history_snapshots (timestamp DESC)
-    `);
+      await this.run(`
+        CREATE INDEX IF NOT EXISTS idx_history_snapshots_timestamp
+        ON history_snapshots (timestamp DESC)
+      `);
 
-    this.enabled = true;
-    return true;
+      await this.run(`
+        CREATE TABLE IF NOT EXISTS teacher_reports (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          timestamp INTEGER NOT NULL,
+          reporter_name TEXT NOT NULL,
+          location TEXT NOT NULL,
+          issue_type TEXT NOT NULL,
+          message TEXT NOT NULL
+        )
+      `);
+
+      await this.run(`
+        CREATE INDEX IF NOT EXISTS idx_teacher_reports_timestamp
+        ON teacher_reports (timestamp DESC)
+      `);
+
+      this.enabled = true;
+      return true;
+    })();
+
+    try {
+      return await this.initializing;
+    } finally {
+      this.initializing = null;
+    }
   }
 
   run(sql, params = []) {
@@ -196,6 +224,63 @@ class HistoryStore {
       samples: rows.reverse().map((row) => this.mapRow(row)),
       count: countRow?.total || 0
     };
+  }
+
+  async addTeacherReport(report) {
+    if (!this.enabled) {
+      throw new Error('HistoryStore database is not initialized');
+    }
+
+    const timestamp = Date.now();
+    const result = await this.run(
+      `INSERT INTO teacher_reports (
+        timestamp,
+        reporter_name,
+        location,
+        issue_type,
+        message
+      ) VALUES (?, ?, ?, ?, ?)`,
+      [
+        timestamp,
+        report.reporterName,
+        report.location,
+        report.issueType,
+        report.message
+      ]
+    );
+
+    return {
+      id: result.lastID,
+      timestamp,
+      reporterName: report.reporterName,
+      location: report.location,
+      issueType: report.issueType,
+      message: report.message
+    };
+  }
+
+  async getTeacherReports(limit = 20) {
+    if (!this.enabled) {
+      return [];
+    }
+
+    const safeLimit = Math.max(1, Math.min(limit, 100));
+    const rows = await this.all(
+      `SELECT id, timestamp, reporter_name, location, issue_type, message
+       FROM teacher_reports
+       ORDER BY timestamp DESC
+       LIMIT ?`,
+      [safeLimit]
+    );
+
+    return rows.map((row) => ({
+      id: row.id,
+      timestamp: row.timestamp,
+      reporterName: row.reporter_name,
+      location: row.location,
+      issueType: row.issue_type,
+      message: row.message
+    }));
   }
 
   close() {
