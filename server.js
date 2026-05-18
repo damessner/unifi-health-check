@@ -48,7 +48,15 @@ const TEACHER_READINESS_WARNING_SIGNAL_PENALTY = 5;
 const TEACHER_READINESS_WARNING_CLIENT_PENALTY = 2;
 const TEACHER_PORTAL_RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const TEACHER_PORTAL_MAX_REQUESTS_PER_WINDOW = 60;
+const DASHBOARD_PAGE_MAX_REQUESTS_PER_WINDOW = 120;
 const TEACHER_REPORT_MAX_REQUESTS_PER_WINDOW = 12;
+const TEACHER_ALLOWED_ISSUE_TYPES = new Set([
+  'Slow Wi-Fi',
+  'Connection drops',
+  'Cannot join',
+  'Video call lag',
+  'Other'
+]);
 const rateLimitStore = new Map();
 
 function createRateLimiter(maxRequests, windowMs) {
@@ -80,10 +88,21 @@ const teacherPortalReadLimiter = createRateLimiter(
   TEACHER_PORTAL_MAX_REQUESTS_PER_WINDOW,
   TEACHER_PORTAL_RATE_LIMIT_WINDOW_MS
 );
+const dashboardPageReadLimiter = createRateLimiter(
+  DASHBOARD_PAGE_MAX_REQUESTS_PER_WINDOW,
+  TEACHER_PORTAL_RATE_LIMIT_WINDOW_MS
+);
 const teacherPortalWriteLimiter = createRateLimiter(
   TEACHER_REPORT_MAX_REQUESTS_PER_WINDOW,
   TEACHER_PORTAL_RATE_LIMIT_WINDOW_MS
 );
+
+function sanitizePlainText(value, maxLength) {
+  return String(value || '')
+    .replace(/[<>]/g, '')
+    .trim()
+    .slice(0, maxLength);
+}
 
 /**
  * Push a snapshot into the history ring buffer after a fresh data fetch.
@@ -148,9 +167,11 @@ function buildTeacherStatus(channelAnalysis, clientAnalysis) {
   const problematicClients = clientList.filter((client) => client.severity !== 'healthy');
   const stickyClients = clientList
     .filter((client) => (
-      (client.signal <= TEACHER_STICKY_SIGNAL_THRESHOLD_DBM && client.roamCount <= TEACHER_STICKY_LOW_ROAM_COUNT) ||
+      client.severity !== 'healthy' && (
+        (client.signal <= TEACHER_STICKY_SIGNAL_THRESHOLD_DBM && client.roamCount <= TEACHER_STICKY_LOW_ROAM_COUNT) ||
       client.roamCount >= TEACHER_STICKY_HIGH_ROAM_COUNT ||
-      (client.band === '2.4GHz' && client.signal <= TEACHER_STICKY_24GHZ_SIGNAL_THRESHOLD_DBM)
+        (client.band === '2.4GHz' && client.signal <= TEACHER_STICKY_24GHZ_SIGNAL_THRESHOLD_DBM)
+      )
     ))
     .sort((a, b) => {
       if ((b.roamCount || 0) !== (a.roamCount || 0)) {
@@ -221,7 +242,7 @@ function buildTeacherStatus(channelAnalysis, clientAnalysis) {
         severityScore
       };
     })
-    .sort((a, b) => b.severityScore - a.severityScore || a.name.localeCompare(b.name))
+    .sort((a, b) => (b.severityScore - a.severityScore) || a.name.localeCompare(b.name))
     .slice(0, 8);
 
   const criticalSignals = channelAnalysis.summary.congestedRadiosCount || 0;
@@ -349,15 +370,22 @@ app.get('/api/teacher/reports', teacherPortalReadLimiter, async (req, res) => {
 
 app.post('/api/teacher/report', teacherPortalWriteLimiter, async (req, res) => {
   try {
-    const reporterName = String(req.body?.reporterName || '').trim().slice(0, 80);
-    const location = String(req.body?.location || '').trim().slice(0, 120);
-    const issueType = String(req.body?.issueType || '').trim().slice(0, 60);
-    const message = String(req.body?.message || '').trim().slice(0, 500);
+    const reporterName = sanitizePlainText(req.body?.reporterName, 80);
+    const location = sanitizePlainText(req.body?.location, 120);
+    const issueType = sanitizePlainText(req.body?.issueType, 60);
+    const message = sanitizePlainText(req.body?.message, 500);
 
     if (!location || !issueType || !message) {
       return res.status(400).json({
         success: false,
         error: 'Location, issue type, and message are required.'
+      });
+    }
+
+    if (!TEACHER_ALLOWED_ISSUE_TYPES.has(issueType)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Unsupported issue type.'
       });
     }
 
@@ -449,7 +477,7 @@ app.get('/teacher', teacherPortalReadLimiter, (req, res) => {
 });
 
 // Serve index.html for all other routes to support client-side SPA routing if needed
-app.get('*', (req, res) => {
+app.get('*', dashboardPageReadLimiter, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 

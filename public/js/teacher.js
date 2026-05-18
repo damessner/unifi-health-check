@@ -54,7 +54,7 @@ function renderTeacherStickyClients(clients = []) {
     <div class="teacher-list-item">
       <div class="teacher-list-item-top">
         <strong>${escapeTeacherHtml(client.hostname)}</strong>
-        <span class="teacher-readiness-pill ${client.severity === 'critical' ? 'red' : 'yellow'}">${client.roamCount} roams</span>
+        <span class="teacher-readiness-pill ${client.severity === 'critical' ? 'red' : client.severity === 'warning' ? 'yellow' : 'green'}">${client.roamCount} roams</span>
       </div>
       <p>${escapeTeacherHtml(client.apName)} · ${escapeTeacherHtml(client.band)} · ${escapeTeacherHtml(client.signal)} dBm</p>
       <small>${escapeTeacherHtml(client.recommendation)}</small>

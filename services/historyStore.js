@@ -73,11 +73,7 @@ class HistoryStore {
       return true;
     })();
 
-    try {
-      return await this.initializationPromise;
-    } finally {
-      this.initializationPromise = null;
-    }
+    return this.initializationPromise;
   }
 
   run(sql, params = []) {
