@@ -9,7 +9,7 @@ module.exports = {
     site: process.env.UNIFI_SITE || 'default'
   },
   server: {
-    port: parseInt(process.env.PORT, 10) || 3000,
+    port: parseInt(process.env.PORT, 10) || 3445,
     cacheExpiryMs: (parseInt(process.env.CACHE_EXPIRY_SEC, 10) || 15) * 1000
   }
 };

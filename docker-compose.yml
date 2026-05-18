@@ -9,11 +9,10 @@ services:
     restart: unless-stopped
     ports:
       # Exposes the service on a unique and configurable host port.
-      # By default, it maps to port 3843 on the host, preventing conflicts.
-      - "${HOST_PORT:-3843}:3000"
+      # By default, it maps to port 2943 on the host, preventing conflicts.
+      - "${HOST_PORT:-2943}:${PORT:-3445}"
     env_file:
       - .env
     environment:
       - NODE_ENV=production
-      # Re-routing Express to listen to 3000 internally inside the container
-      - PORT=3000
+      # Express runtime port is provided via .env (default: 3445)

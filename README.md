@@ -45,7 +45,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/damessner/unifi-health-c
 3. **Proxmox Nesting Validation**: Performs a daemon check and issues alert instructions if Proxmox Nesting is disabled.
 4. **Repository Deployment**: Clones or updates the project code inside `/opt/unifi-health-check`.
 5. **Interactive Configuration Wizard**: Prompts you for your UniFi Controller details and port preferences. In non-interactive terminals, it gracefully falls back to default values.
-6. **Container Orchestration**: Builds and runs the Node.js diagnostics container on a conflict-free, custom external port (**`3843`**).
+6. **Container Orchestration**: Builds and runs the Node.js diagnostics container on a conflict-free, custom external port (**`2943`**).
 7. **Success Summary**: Prints local container IP access URLs and helpful commands to manage your setup.
 
 ---
@@ -86,8 +86,8 @@ The application is configured using a `.env` file located in the root of the pro
 | `UNIFI_USER` | `observer` | Username for the UniFi account. |
 | `UNIFI_PASS` | `3^K@nP:!$@Hc;,P` | Password for the UniFi account (supports special characters). |
 | `UNIFI_SITE` | `default` | UniFi Site Name/ID (typically `default`). |
-| `PORT` | `3000` | Internal Node.js server port (do not modify). |
-| `HOST_PORT` | `3843` | External port exposed on the host machine to access the UI. |
+| `PORT` | `3445` | Internal Node.js server port (do not modify). |
+| `HOST_PORT` | `2943` | External port exposed on the host machine to access the UI. |
 | `CACHE_EXPIRY_SEC` | `15` | Caching duration (in seconds) of controller data to limit load. |
 
 ---
@@ -127,3 +127,15 @@ The internal Node.js server exposes these diagnostic endpoints:
 ## 🛡️ License
 
 This project is open-source and licensed under the [MIT License](LICENSE).
+
+---
+
+## 🧭 Feature Integrity Snapshot & Strategic Roadmap
+
+Current implementation integrity (verified in this repository):
+
+- ✅ Implemented today: real-time diagnostics API, RF/channel analyzer, iPad/Apple client diagnostics, optimization guidance UI, in-memory history ring buffer, speed/capacity widgets.
+- ⚠️ Partially implemented: optimizer/sandbox simulation UX (no backend graph-coloring solver yet).
+- ❌ Not implemented yet: webhook/email alerting, sticky-client roaming diagnostics, classroom SLA grouping, safe write-back controller actions, airtime fairness auditor, DHCP pool exhaustion predictor, SQLite persistent time-series, rogue AP radar, teacher portal/reporting endpoint.
+
+Planned advanced extensions are documented in **`/STRATEGIC_ROADMAP.md`**.

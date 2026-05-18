@@ -3,7 +3,7 @@
 # UniFi Network Health Analyzer - Debian LXC Auto-Installer & Docker Host
 # =========================================================================
 # This script automates the installation of Docker, Git, configurations,
-# and starts the service container on a unique port (3843) inside Debian LXC.
+# and starts the service container on a unique port (2943) inside Debian LXC.
 #
 # One-liner execution:
 #   bash -c "$(curl -fsSL https://raw.githubusercontent.com/damessner/unifi-health-check/main/setup-lxc.sh)"
@@ -163,7 +163,7 @@ else
     prompt_var "UniFi Username          " "observer" "CONF_USER"
     prompt_var "UniFi Password          " '3^K@nP:!$@Hc;,P' "CONF_PASS"
     prompt_var "UniFi Site Name         " "default" "CONF_SITE"
-    prompt_var "Dashboard External Port " "3843" "CONF_HOST_PORT"
+    prompt_var "Dashboard External Port " "2943" "CONF_HOST_PORT"
     
     echo -e "${BOLD}${MAGENTA}----------------------------${NC}\n"
     
@@ -175,7 +175,7 @@ UNIFI_PORT=$CONF_PORT
 UNIFI_USER=$CONF_USER
 UNIFI_PASS=$CONF_PASS
 UNIFI_SITE=$CONF_SITE
-PORT=3000
+PORT=3445
 CACHE_EXPIRY_SEC=15
 HOST_PORT=$CONF_HOST_PORT
 EOF
@@ -195,9 +195,9 @@ if [ -z "$IP_ADDRESS" ]; then
 fi
 
 # Retrieve Host Port
-PORT_CONFIGURED=$(grep '^HOST_PORT=' "$ENV_FILE" | cut -d'=' -f2 || echo "3843")
+PORT_CONFIGURED=$(grep '^HOST_PORT=' "$ENV_FILE" | cut -d'=' -f2 || echo "2943")
 if [ -z "$PORT_CONFIGURED" ]; then
-    PORT_CONFIGURED="3843"
+    PORT_CONFIGURED="2943"
 fi
 
 # Clear screen for final result presentation

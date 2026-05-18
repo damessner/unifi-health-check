@@ -26,7 +26,7 @@ COPY . .
 USER node
 
 # Expose internal service port
-EXPOSE 3000
+EXPOSE 3445
 
 # Define container entrypoint command
 CMD ["npm", "start"]
