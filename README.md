@@ -105,6 +105,9 @@ The application is configured using a `.env` file located in the root of the pro
 | `HOST_PORT` | `2943` | External port exposed on the host machine to access the UI. |
 | `CACHE_EXPIRY_SEC` | `15` | Caching duration (in seconds) of controller data to limit load. |
 | `API_TOKEN` | _(empty)_ | Optional API protection token; when set, send it in `x-api-token` header for all `/api/*` calls. |
+| `HISTORY_DB_PATH` | `./data/unifi-history.sqlite` | SQLite file used to persist timeline snapshots across restarts. |
+| `HISTORY_RETENTION_SAMPLES` | `2000` | Maximum number of persisted history rows kept in SQLite before pruning. |
+| `HISTORY_API_LIMIT` | `240` | Default number of history samples returned to the dashboard charts. |
 | `UNIFI_ALLOW_SELF_SIGNED` | `false` | Keep `false` for production; only set `true` if you intentionally trust a self-signed controller certificate. |
 
 ---
@@ -137,7 +140,7 @@ Navigate to `/opt/unifi-health-check` (or your manual installation folder) to ex
 The internal Node.js server exposes these diagnostic endpoints:
 - **`GET /api/health`**: Tests connection status to the UniFi controller and verifies credentials.
 - **`GET /api/diagnostics`**: Compiles AP radio congestion, active clients, and Apple device metrics. Use `?force=true` to bypass cache.
-- **`GET /api/history`**: Returns the ring-buffered timeline trends (up to 60 snapshot samples).
+- **`GET /api/history`**: Returns persisted SQLite timeline trends. Supports `?limit=<n>` for chart/export sizing.
 
 If `API_TOKEN` is configured, include `x-api-token: <token>` for all `/api/*` requests.
 
@@ -148,6 +151,7 @@ If `API_TOKEN` is configured, include `x-api-token: <token>` for all `/api/*` re
 - No real controller credentials are shipped in defaults.
 - Sandbox topology is generated dynamically from live AP telemetry (no hardcoded room/device map).
 - Sandbox model caps visualization/simulation to the first 60 AP endpoints per fetch.
+- The optimization dashboard can export a multi-sheet XLSX workbook with separate 2.4 GHz and 5 GHz recommendations plus butterfly-impact summaries.
 - For public exposure, run behind TLS and reverse-proxy auth in addition to `API_TOKEN`.
 
 ---
@@ -162,7 +166,7 @@ This project is open-source and licensed under the [MIT License](LICENSE).
 
 Current implementation integrity (verified in this repository):
 
-- ✅ Implemented today: real-time diagnostics API, RF/channel analyzer, iPad/Apple client diagnostics, optimization guidance UI, in-memory history ring buffer, speed/capacity widgets.
+- ✅ Implemented today: real-time diagnostics API, RF/channel analyzer, iPad/Apple client diagnostics, optimization guidance UI, XLSX optimization export, SQLite-backed history persistence, speed/capacity widgets.
 - ⚠️ Partially implemented: optimizer/sandbox simulation UX (no backend graph-coloring solver yet).
 - ❌ Not implemented yet: webhook/email alerting, sticky-client roaming diagnostics, classroom SLA grouping, safe write-back controller actions, airtime fairness auditor, DHCP pool exhaustion predictor, SQLite persistent time-series, rogue AP radar, teacher portal/reporting endpoint.
 

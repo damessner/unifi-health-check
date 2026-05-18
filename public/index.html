@@ -16,6 +16,7 @@
   
   <!-- Chart.js for historical trend charts -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js" integrity="sha384-OLBgp1GsljhM2TJ+sbHjaiH9txEUvgdDTAzHv2P24donTt6/529l+9Ua0vFImLlb" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   
   <!-- CSS Stylesheet -->
   <link rel="stylesheet" href="css/style.css">
@@ -387,7 +388,7 @@
             <div>
               <span style="color:var(--text-main); font-size:0.9rem;">Samples stored: </span>
               <strong id="history-sample-count" style="color:var(--primary-light);">0</strong>
-              <span class="text-muted" style="font-size:0.78rem; margin-left:8px;">(Ring buffer resets on server restart. Refresh data to add samples.)</span>
+              <span class="text-muted" style="font-size:0.78rem; margin-left:8px;">(Persisted in SQLite across restarts. Refresh data to add samples.)</span>
             </div>
             <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
               <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
@@ -856,6 +857,9 @@
               <span class="count-badge bg-teal-alpha" style="font-size:0.75rem; font-weight:700; padding:4px 10px; border-radius:20px;" id="opt-drift-label">Checking configuration drift...</span>
               <button class="btn-print" onclick="window.print()" title="Print optimization blueprint or export to PDF" style="background: linear-gradient(135deg, var(--primary-light), #6366F1); color: white; border: none; padding: 6px 12px; border-radius: 8px; font-size: 0.8rem; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; transition: all 0.2s ease;">
                 <i data-lucide="printer" style="width:14px; height:14px;"></i> <span>Print/PDF Plan</span>
+              </button>
+              <button class="btn-export" onclick="exportOptimizationXlsx()" title="Export the optimization workbook as XLSX">
+                <i data-lucide="file-spreadsheet"></i> <span>Export XLSX</span>
               </button>
               <button class="btn-reset-check" onclick="resetCheckedAPs()" title="Reset all checked checkboxes" style="background: rgba(255, 255, 255, 0.05); color: var(--text-muted); border: 1px solid var(--border-glass); padding: 6px 12px; border-radius: 8px; font-size: 0.8rem; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; transition: all 0.2s ease;">
                 <i data-lucide="rotate-ccw" style="width:14px; height:14px;"></i> <span>Reset Checks</span>

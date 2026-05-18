@@ -3,6 +3,7 @@ const path = require('path');
 const config = require('./config');
 const unifiClient = require('./services/unifiClient');
 const analyzer = require('./services/analyzer');
+const historyStore = require('./services/historyStore');
 
 const app = express();
 const PORT = config.server.port;
@@ -37,7 +38,7 @@ const HISTORY_MAX_SAMPLES = 60;
 /**
  * Push a snapshot into the history ring buffer after a fresh data fetch.
  */
-function pushHistorySnapshot(channels, clients) {
+async function pushHistorySnapshot(channels, clients) {
   const snapshot = {
     timestamp: Date.now(),
     totalAllClients: clients.summary.totalAllClients,
@@ -53,6 +54,12 @@ function pushHistorySnapshot(channels, clients) {
   historyBuffer.push(snapshot);
   if (historyBuffer.length > HISTORY_MAX_SAMPLES) {
     historyBuffer.shift();
+  }
+
+  try {
+    await historyStore.appendSnapshot(snapshot);
+  } catch (err) {
+    console.warn(`[History] Failed to persist snapshot: ${err.message}`);
   }
 }
 
@@ -115,11 +122,24 @@ async function getFreshData(bypassCache = false) {
  * API: Get historical metric snapshots for trend analysis
  */
 app.get('/api/history', (req, res) => {
-  res.json({
-    success: true,
-    samples: historyBuffer,
-    count: historyBuffer.length
-  });
+  const limit = parseInt(req.query.limit, 10) || config.server.historyApiLimit;
+
+  historyStore.getSnapshots(limit)
+    .then(({ samples, count }) => {
+      res.json({
+        success: true,
+        samples,
+        count
+      });
+    })
+    .catch((err) => {
+      console.warn(`[History] Falling back to in-memory buffer: ${err.message}`);
+      res.json({
+        success: true,
+        samples: historyBuffer,
+        count: historyBuffer.length
+      });
+    });
 });
 
 /**
@@ -159,9 +179,9 @@ app.get('/api/diagnostics', async (req, res) => {
     const apsModel = buildApsModel(channelAnalysis);
 
     // Only push to history when data is fresh from the controller (not served from cache)
-    if (Date.now() - cache.lastFetch < FRESH_DATA_THRESHOLD_MS) {
-      pushHistorySnapshot(channelAnalysis, clientAnalysis);
-    }
+      if (Date.now() - cache.lastFetch < FRESH_DATA_THRESHOLD_MS) {
+        await pushHistorySnapshot(channelAnalysis, clientAnalysis);
+      }
 
     res.json({
       success: true,
@@ -189,6 +209,15 @@ app.get('*', (req, res) => {
 // Startup check & server start
 async function startServer() {
   console.log('=== UniFi Diagnostics System Startup ===');
+  try {
+    await historyStore.init();
+    const persistedHistory = await historyStore.getSnapshots(HISTORY_MAX_SAMPLES);
+    historyBuffer.push(...persistedHistory.samples);
+    console.log(`[History] SQLite persistence ready (${persistedHistory.count} stored samples).`);
+  } catch (err) {
+    console.warn(`[History] SQLite persistence unavailable: ${err.message}`);
+  }
+
   try {
     if (process.env.MOCK_MODE === 'true') {
       console.log('[Startup] MOCK_MODE=true detected. Skipping initial UniFi controller login.');
