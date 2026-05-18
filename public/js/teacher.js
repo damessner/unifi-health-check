@@ -7,6 +7,14 @@ function escapeTeacherHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+function formatTeacherDate(timestamp) {
+  return new Date(timestamp).toLocaleString();
+}
+
+function formatTeacherTime(timestamp) {
+  return new Date(timestamp).toLocaleTimeString();
+}
+
 function formatTeacherStatus(status) {
   if (status === 'red') return 'Attention Needed';
   if (status === 'yellow') return 'Watch Closely';
@@ -71,7 +79,7 @@ function renderTeacherReports(reports = []) {
         <strong>${escapeTeacherHtml(report.location)}</strong>
         <span class="teacher-readiness-pill yellow">${escapeTeacherHtml(report.issueType)}</span>
       </div>
-      <p>${escapeTeacherHtml(report.reporterName)} · ${new Date(report.timestamp).toLocaleString('de-AT')}</p>
+      <p>${escapeTeacherHtml(report.reporterName)} · ${formatTeacherDate(report.timestamp)}</p>
       <small>${escapeTeacherHtml(report.message)}</small>
     </div>
   `).join('');
@@ -101,7 +109,7 @@ async function loadTeacherPortal() {
     if (headline) headline.textContent = payload.status.headline;
     if (overallStatusEl) overallStatusEl.textContent = formatTeacherStatus(payload.status.overallStatus);
     if (readinessScoreEl) readinessScoreEl.textContent = `${payload.status.readinessScore}%`;
-    if (lastUpdatedEl) lastUpdatedEl.textContent = `Last updated: ${new Date(payload.timestamp).toLocaleTimeString('de-AT')}`;
+    if (lastUpdatedEl) lastUpdatedEl.textContent = `Last updated: ${formatTeacherTime(payload.timestamp)}`;
 
     renderTeacherRooms(payload.status.locations);
     renderTeacherStickyClients(payload.status.stickyClients);

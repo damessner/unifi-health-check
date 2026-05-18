@@ -7,18 +7,18 @@ class HistoryStore {
   constructor() {
     this.db = null;
     this.enabled = false;
-    this.initializing = null;
+    this.initializationPromise = null;
   }
 
   async init() {
     if (this.db) {
       return true;
     }
-    if (this.initializing) {
-      return this.initializing;
+    if (this.initializationPromise) {
+      return this.initializationPromise;
     }
 
-    this.initializing = (async () => {
+    this.initializationPromise = (async () => {
       const dbPath = config.server.historyDbPath;
       fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
@@ -74,9 +74,9 @@ class HistoryStore {
     })();
 
     try {
-      return await this.initializing;
+      return await this.initializationPromise;
     } finally {
-      this.initializing = null;
+      this.initializationPromise = null;
     }
   }
 

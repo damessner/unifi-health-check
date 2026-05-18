@@ -35,6 +35,55 @@ const cache = {
 const historyBuffer = [];
 const HISTORY_MAX_SAMPLES = 60;
 let serverInstance = null;
+const TEACHER_STICKY_SIGNAL_THRESHOLD_DBM = -75;
+const TEACHER_STICKY_24GHZ_SIGNAL_THRESHOLD_DBM = -72;
+const TEACHER_STICKY_LOW_ROAM_COUNT = 1;
+const TEACHER_STICKY_HIGH_ROAM_COUNT = 5;
+const TEACHER_LOCATION_CRITICAL_WEIGHT = 3;
+const TEACHER_LOCATION_WARNING_WEIGHT = 2;
+const TEACHER_LOCATION_RED_CLIENT_ISSUE_THRESHOLD = 3;
+const TEACHER_READINESS_CRITICAL_SIGNAL_PENALTY = 12;
+const TEACHER_READINESS_CRITICAL_CLIENT_PENALTY = 4;
+const TEACHER_READINESS_WARNING_SIGNAL_PENALTY = 5;
+const TEACHER_READINESS_WARNING_CLIENT_PENALTY = 2;
+const TEACHER_PORTAL_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const TEACHER_PORTAL_MAX_REQUESTS_PER_WINDOW = 60;
+const TEACHER_REPORT_MAX_REQUESTS_PER_WINDOW = 12;
+const rateLimitStore = new Map();
+
+function createRateLimiter(maxRequests, windowMs) {
+  return (req, res, next) => {
+    const now = Date.now();
+    const key = `${req.ip}:${req.path}`;
+    const entry = rateLimitStore.get(key);
+
+    if (!entry || now - entry.windowStart >= windowMs) {
+      rateLimitStore.set(key, { windowStart: now, count: 1 });
+      next();
+      return;
+    }
+
+    if (entry.count >= maxRequests) {
+      res.status(429).json({
+        success: false,
+        error: 'Too many requests. Please wait a moment and try again.'
+      });
+      return;
+    }
+
+    entry.count += 1;
+    next();
+  };
+}
+
+const teacherPortalReadLimiter = createRateLimiter(
+  TEACHER_PORTAL_MAX_REQUESTS_PER_WINDOW,
+  TEACHER_PORTAL_RATE_LIMIT_WINDOW_MS
+);
+const teacherPortalWriteLimiter = createRateLimiter(
+  TEACHER_REPORT_MAX_REQUESTS_PER_WINDOW,
+  TEACHER_PORTAL_RATE_LIMIT_WINDOW_MS
+);
 
 /**
  * Push a snapshot into the history ring buffer after a fresh data fetch.
@@ -99,9 +148,9 @@ function buildTeacherStatus(channelAnalysis, clientAnalysis) {
   const problematicClients = clientList.filter((client) => client.severity !== 'healthy');
   const stickyClients = clientList
     .filter((client) => (
-      (client.signal <= -75 && client.roamCount <= 1) ||
-      client.roamCount >= 5 ||
-      (client.band === '2.4GHz' && client.signal <= -72)
+      (client.signal <= TEACHER_STICKY_SIGNAL_THRESHOLD_DBM && client.roamCount <= TEACHER_STICKY_LOW_ROAM_COUNT) ||
+      client.roamCount >= TEACHER_STICKY_HIGH_ROAM_COUNT ||
+      (client.band === '2.4GHz' && client.signal <= TEACHER_STICKY_24GHZ_SIGNAL_THRESHOLD_DBM)
     ))
     .sort((a, b) => {
       if ((b.roamCount || 0) !== (a.roamCount || 0)) {
@@ -154,9 +203,13 @@ function buildTeacherStatus(channelAnalysis, clientAnalysis) {
 
   const locations = Object.values(locationScores)
     .map((location) => {
-      const severityScore = location.criticalSignals * 3 + location.warningSignals * 2 + location.clientIssues;
+      const severityScore = (
+        location.criticalSignals * TEACHER_LOCATION_CRITICAL_WEIGHT +
+        location.warningSignals * TEACHER_LOCATION_WARNING_WEIGHT +
+        location.clientIssues
+      );
       let readiness = 'green';
-      if (location.criticalSignals > 0 || location.clientIssues >= 3) {
+      if (location.criticalSignals > 0 || location.clientIssues >= TEACHER_LOCATION_RED_CLIENT_ISSUE_THRESHOLD) {
         readiness = 'red';
       } else if (location.warningSignals > 0 || location.clientIssues > 0) {
         readiness = 'yellow';
@@ -188,7 +241,11 @@ function buildTeacherStatus(channelAnalysis, clientAnalysis) {
 
   const readinessScore = Math.max(
     0,
-    100 - criticalSignals * 12 - criticalClients * 4 - warningSignals * 5 - warningClients * 2
+    100 -
+      criticalSignals * TEACHER_READINESS_CRITICAL_SIGNAL_PENALTY -
+      criticalClients * TEACHER_READINESS_CRITICAL_CLIENT_PENALTY -
+      warningSignals * TEACHER_READINESS_WARNING_SIGNAL_PENALTY -
+      warningClients * TEACHER_READINESS_WARNING_CLIENT_PENALTY
   );
 
   return {
@@ -249,7 +306,7 @@ app.get('/api/history', (req, res) => {
     });
 });
 
-app.get('/api/teacher/status', async (req, res) => {
+app.get('/api/teacher/status', teacherPortalReadLimiter, async (req, res) => {
   try {
     const { devices, clients } = await getFreshData(false);
     const channelAnalysis = analyzer.analyzeChannels(devices);
@@ -272,7 +329,7 @@ app.get('/api/teacher/status', async (req, res) => {
   }
 });
 
-app.get('/api/teacher/reports', async (req, res) => {
+app.get('/api/teacher/reports', teacherPortalReadLimiter, async (req, res) => {
   try {
     const limit = parseInt(req.query.limit, 10) || 20;
     const reports = await historyStore.getTeacherReports(limit);
@@ -290,7 +347,7 @@ app.get('/api/teacher/reports', async (req, res) => {
   }
 });
 
-app.post('/api/teacher/report', async (req, res) => {
+app.post('/api/teacher/report', teacherPortalWriteLimiter, async (req, res) => {
   try {
     const reporterName = String(req.body?.reporterName || '').trim().slice(0, 80);
     const location = String(req.body?.location || '').trim().slice(0, 120);
@@ -385,10 +442,9 @@ app.get('/api/diagnostics', async (req, res) => {
 });
 
 /**
- * API: Export channel optimization + client report as XLSX
- * Uses the butterfly-aware iterative greedy optimizer.
+ * Serve the simplified teacher portal.
  */
-app.get('/teacher', (req, res) => {
+app.get('/teacher', teacherPortalReadLimiter, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'teacher.html'));
 });
 
