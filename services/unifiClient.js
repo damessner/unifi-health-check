@@ -127,6 +127,20 @@ class UnifiClient {
       return true;
     }
 
+
+    if (this.password === 'change-me') {
+      const error = new Error('UNIFI_PASS is still set to the placeholder value `change-me`. Update it before attempting live controller authentication.');
+      this.status.sessionActive = false;
+      this.status.auth = {
+        mode: 'live',
+        lastAttemptAt: this.status.auth.lastAttemptAt,
+        lastSuccessAt: this.status.auth.lastSuccessAt,
+        lastError: error.message,
+        lastDurationMs: Date.now() - startedAt
+      };
+      throw error;
+    }
+
     console.log(`[UniFi] Attempting authentication on https://${this.host}:${this.port}/api/login`);
     try {
       const res = await this._request({

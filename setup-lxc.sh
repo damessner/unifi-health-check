@@ -138,6 +138,25 @@ prompt_var() {
   fi
 }
 
+
+confirm_password_value() {
+  if [ "$CONF_PASS" != 'change-me' ] || [ "$NON_INTERACTIVE" = 'true' ]; then
+    return
+  fi
+
+  while [ "$CONF_PASS" = 'change-me' ]; do
+    log_warning 'The placeholder password change-me is insecure.'
+    printf "%b" "${BOLD}${CYAN}Enter the real UniFi password now, or type YES to keep the placeholder for demo/mock use only${NC}: "
+    read -r response
+    if [ "$response" = 'YES' ]; then
+      break
+    fi
+    if [ -n "$response" ]; then
+      CONF_PASS="$response"
+    fi
+  done
+}
+
 write_env_file() {
   cat > "$ENV_FILE" <<ENVEOF
 # Generated on $(date)
@@ -178,6 +197,7 @@ if [ ! -f "$ENV_FILE" ]; then
   prompt_var 'UniFi Controller Port   ' '8443' 'CONF_PORT'
   prompt_var 'UniFi Username          ' 'observer' 'CONF_USER'
   prompt_var 'UniFi Password          ' 'change-me' 'CONF_PASS'
+  confirm_password_value
   prompt_var 'UniFi Site Name         ' 'default' 'CONF_SITE'
   prompt_var 'Dashboard External Port ' "${CUSTOM_HOST_PORT:-$DEFAULT_HOST_PORT}" 'CONF_HOST_PORT'
 
