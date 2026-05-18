@@ -3,6 +3,7 @@ const path = require('path');
 const config = require('./config');
 const unifiClient = require('./services/unifiClient');
 const analyzer = require('./services/analyzer');
+const xlsxExporter = require('./services/xlsxExporter');
 
 const app = express();
 const PORT = config.server.port;
@@ -178,6 +179,37 @@ app.get('/api/diagnostics', async (req, res) => {
       error: 'Failed to compile network diagnostics from UniFi Controller.',
       details: err.message
     });
+  }
+});
+
+/**
+ * API: Export channel optimization + client report as XLSX
+ * Uses the butterfly-aware iterative greedy optimizer.
+ */
+app.get('/api/export/xlsx', async (req, res) => {
+  try {
+    const { devices, clients } = await getFreshData(false);
+    const channelAnalysis = analyzer.analyzeChannels(devices);
+    const clientAnalysis  = analyzer.analyzeClients(clients, devices);
+
+    const diagnosticsData = {
+      channels: channelAnalysis,
+      clients:  clientAnalysis
+    };
+
+    const buffer = await xlsxExporter.generateXlsx(diagnosticsData);
+    const ts = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
+    const filename = `unifi_optimization_${ts}.xlsx`;
+
+    res.setHeader('Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', buffer.length);
+    res.send(buffer);
+    console.log(`[Export] XLSX report generated: ${filename} (${Math.round(buffer.length / 1024)} KB)`);
+  } catch (err) {
+    console.error('[Export] XLSX generation failed:', err);
+    res.status(500).json({ success: false, error: 'Failed to generate XLSX report.', details: err.message });
   }
 });
 
