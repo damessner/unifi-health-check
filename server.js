@@ -1,4 +1,5 @@
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const path = require('path');
 const config = require('./config');
 const unifiClient = require('./services/unifiClient');
@@ -57,49 +58,35 @@ const TEACHER_ALLOWED_ISSUE_TYPES = new Set([
   'Video call lag',
   'Other'
 ]);
-const rateLimitStore = new Map();
-
-function createRateLimiter(maxRequests, windowMs) {
-  return (req, res, next) => {
-    const now = Date.now();
-    const key = `${req.ip}:${req.path}`;
-    const entry = rateLimitStore.get(key);
-
-    if (!entry || now - entry.windowStart >= windowMs) {
-      rateLimitStore.set(key, { windowStart: now, count: 1 });
-      next();
-      return;
-    }
-
-    if (entry.count >= maxRequests) {
-      res.status(429).json({
-        success: false,
-        error: 'Too many requests. Please wait a moment and try again.'
-      });
-      return;
-    }
-
-    entry.count += 1;
-    next();
-  };
-}
-
-const teacherPortalReadLimiter = createRateLimiter(
-  TEACHER_PORTAL_MAX_REQUESTS_PER_WINDOW,
-  TEACHER_PORTAL_RATE_LIMIT_WINDOW_MS
-);
-const dashboardPageReadLimiter = createRateLimiter(
-  DASHBOARD_PAGE_MAX_REQUESTS_PER_WINDOW,
-  TEACHER_PORTAL_RATE_LIMIT_WINDOW_MS
-);
-const teacherPortalWriteLimiter = createRateLimiter(
-  TEACHER_REPORT_MAX_REQUESTS_PER_WINDOW,
-  TEACHER_PORTAL_RATE_LIMIT_WINDOW_MS
-);
+const teacherPortalReadLimiter = rateLimit({
+  windowMs: TEACHER_PORTAL_RATE_LIMIT_WINDOW_MS,
+  limit: TEACHER_PORTAL_MAX_REQUESTS_PER_WINDOW,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+const dashboardPageReadLimiter = rateLimit({
+  windowMs: TEACHER_PORTAL_RATE_LIMIT_WINDOW_MS,
+  limit: DASHBOARD_PAGE_MAX_REQUESTS_PER_WINDOW,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+const teacherPortalWriteLimiter = rateLimit({
+  windowMs: TEACHER_PORTAL_RATE_LIMIT_WINDOW_MS,
+  limit: TEACHER_REPORT_MAX_REQUESTS_PER_WINDOW,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    res.status(429).json({
+      success: false,
+      error: 'Too many requests. Please wait a moment and try again.'
+    });
+  }
+});
 
 function sanitizePlainText(value, maxLength) {
   return String(value || '')
-    .replace(/[<>]/g, '')
+    .replace(/[<>&"'`]/g, '')
+    .replace(/\s+/g, ' ')
     .trim()
     .slice(0, maxLength);
 }
