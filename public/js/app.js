@@ -50,7 +50,7 @@ const CACHE_AGE_THRESHOLD_SECONDS = 2;
 const SANDBOX_OVERRIDE_NOTICE_DELAY_MS = 800;
 const MIN_BASELINE_RADIO_LOAD = 12;
 const NEIGHBOR_CONTENTION_PENALTY_PCT = 18;
-const HISTORY_FETCH_LIMIT = 240;
+const MAX_HISTORY_SAMPLES = 240;
 const CLIENT_SATISFACTION_CU_WEIGHT = 0.7;
 const CLIENT_SATISFACTION_RETRY_WEIGHT = 0.5;
 const MIN_CLIENT_SATISFACTION = 10;
@@ -2195,7 +2195,7 @@ async function exportOptimizationXlsx() {
   let historySamples = [];
 
   try {
-    const historyResponse = await fetch(`/api/history?limit=${HISTORY_FETCH_LIMIT}`);
+    const historyResponse = await fetch(`/api/history?limit=${MAX_HISTORY_SAMPLES}`);
     if (historyResponse.ok) {
       const historyPayload = await historyResponse.json();
       historySamples = Array.isArray(historyPayload.samples) ? historyPayload.samples : [];
@@ -2333,7 +2333,7 @@ async function exportOptimizationXlsx() {
   const data = window.XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
   downloadBlob(
     new Blob([data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }),
-    `unifi-optimization-${generatedAt.toISOString().slice(0, 19).replace(/[:]/g, '-')}.xlsx`
+    `unifi-optimization-${generatedAt.toISOString().slice(0, 19).replace(/:/g, '-')}.xlsx`
   );
 
   showToast('Optimization workbook exported as XLSX.', 'success');
@@ -2353,7 +2353,7 @@ let chartSpeeds = null;
  */
 async function fetchAndRenderHistory() {
   try {
-    const res = await fetch(`/api/history?limit=${HISTORY_FETCH_LIMIT}`);
+    const res = await fetch(`/api/history?limit=${MAX_HISTORY_SAMPLES}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (data.success && data.samples) {

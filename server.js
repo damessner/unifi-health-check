@@ -179,9 +179,9 @@ app.get('/api/diagnostics', async (req, res) => {
     const apsModel = buildApsModel(channelAnalysis);
 
     // Only push to history when data is fresh from the controller (not served from cache)
-      if (Date.now() - cache.lastFetch < FRESH_DATA_THRESHOLD_MS) {
-        await pushHistorySnapshot(channelAnalysis, clientAnalysis);
-      }
+    if (Date.now() - cache.lastFetch < FRESH_DATA_THRESHOLD_MS) {
+      await pushHistorySnapshot(channelAnalysis, clientAnalysis);
+    }
 
     res.json({
       success: true,

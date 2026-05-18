@@ -54,7 +54,7 @@ class HistoryStore {
 
   run(sql, params = []) {
     return new Promise((resolve, reject) => {
-      this.db.run(sql, params, function onRun(err) {
+      this.db.run(sql, params, function (err) {
         if (err) {
           reject(err);
           return;
