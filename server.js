@@ -21,6 +21,14 @@ const cache = {
 const historyBuffer = [];
 const HISTORY_MAX_SAMPLES = config.server.historyMaxSamples;
 
+
+function warnIfDefaultPassword() {
+  if (config.unifi.password === 'change-me') {
+    console.warn('[Startup Warning] UNIFI_PASS is still set to the placeholder value `change-me`. Update it before relying on production telemetry.');
+  }
+}
+
+
 function getSourceLabel(statusSummary, usedCache = false) {
   if (usedCache) {
     return cache.lastSource === 'unknown' ? 'cache' : `cache:${cache.lastSource}`;
@@ -494,6 +502,7 @@ app.get('*', (req, res) => {
 
 async function startServer() {
   console.log('=== UniFi Diagnostics System Startup ===');
+  warnIfDefaultPassword();
   try {
     await unifiClient.login();
     console.log('[Startup] Connection to UniFi Controller verified successfully!');

@@ -186,6 +186,10 @@ if [ ! -f "$ENV_FILE" ]; then
   log_success 'Environment config (.env) successfully generated.'
 fi
 
+if grep -q '^UNIFI_PASS=change-me$' "$ENV_FILE"; then
+  log_warning 'UNIFI_PASS is still set to the placeholder value change-me. Update /opt/unifi-health-check/.env before relying on production telemetry.'
+fi
+
 PORT_CONFIGURED=$(grep '^HOST_PORT=' "$ENV_FILE" | tail -n 1 | cut -d'=' -f2)
 if [ -z "$PORT_CONFIGURED" ]; then
   PORT_CONFIGURED="$DEFAULT_HOST_PORT"
