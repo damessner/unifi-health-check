@@ -7,6 +7,7 @@ class HistoryStore {
   constructor() {
     this.db = null;
     this.enabled = false;
+    // Reused while init() is in flight so concurrent callers share one setup sequence.
     this.initializationPromise = null;
   }
 

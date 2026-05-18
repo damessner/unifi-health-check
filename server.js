@@ -84,6 +84,7 @@ const teacherPortalWriteLimiter = rateLimit({
 });
 
 function sanitizePlainText(value, maxLength) {
+  // Teacher reports are stored as plain text only, so markup characters are stripped.
   return String(value || '')
     .replace(/[<>&"'`]/g, '')
     .replace(/\s+/g, ' ')
@@ -156,7 +157,7 @@ function buildTeacherStatus(channelAnalysis, clientAnalysis) {
     .filter((client) => (
       client.severity !== 'healthy' && (
         (client.signal <= TEACHER_STICKY_SIGNAL_THRESHOLD_DBM && client.roamCount <= TEACHER_STICKY_LOW_ROAM_COUNT) ||
-      client.roamCount >= TEACHER_STICKY_HIGH_ROAM_COUNT ||
+        client.roamCount >= TEACHER_STICKY_HIGH_ROAM_COUNT ||
         (client.band === '2.4GHz' && client.signal <= TEACHER_STICKY_24GHZ_SIGNAL_THRESHOLD_DBM)
       )
     ))
@@ -357,6 +358,13 @@ app.get('/api/teacher/reports', teacherPortalReadLimiter, async (req, res) => {
 
 app.post('/api/teacher/report', teacherPortalWriteLimiter, async (req, res) => {
   try {
+    if (!req.body || typeof req.body !== 'object') {
+      return res.status(400).json({
+        success: false,
+        error: 'A JSON request body is required.'
+      });
+    }
+
     const reporterName = sanitizePlainText(req.body?.reporterName, 80);
     const location = sanitizePlainText(req.body?.location, 120);
     const issueType = sanitizePlainText(req.body?.issueType, 60);
