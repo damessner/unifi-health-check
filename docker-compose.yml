@@ -9,8 +9,8 @@ services:
     restart: unless-stopped
     ports:
       # Exposes the service on a unique and configurable host port.
-      # By default, it maps to port 3843 on the host, preventing conflicts.
-      - "${HOST_PORT:-3843}:3000"
+      # By default, it maps to port 38443 on the host, preventing conflicts.
+      - "${HOST_PORT:-38443}:3000"
     env_file:
       - .env
     environment:

@@ -38,7 +38,7 @@ const EVENTS_LOG_MAX = 200;
 const KBPS_PER_MBPS = 1000;
 
 /** DFS 5 GHz channel numbers (channels 52–144) */
-const DFS_CHANNELS_5GHZ = ['52','56','60','64','100','104','108','112','116','120','124','128','132','136','140','144'];
+const DFS_CHANNELS_5GHZ = ['52','56','60','64','100','104','108','112','116','120','124','128','132','136','144'];
 
 /** RF health thresholds used for simulated radio severity calculation */
 const RADIO_CRITICAL_CU_THRESHOLD = 75;
@@ -334,7 +334,7 @@ async function fetchData(isSilent = false, force = false) {
     }
 
     // Verify backend connectivity health state
-    updateControllerStatusCard(true);
+    updateControllerStatusCard(true, '', payload.telemetry);
     
     // Set Timestamp
     const lastUpdatedLabel = document.getElementById('last-updated');
@@ -374,18 +374,19 @@ async function fetchData(isSilent = false, force = false) {
  * @param {boolean} isOnline 
  * @param {string} errText 
  */
-function updateControllerStatusCard(isOnline, errText = '') {
+function updateControllerStatusCard(isOnline, errText = '', telemetry = null) {
   const statusIndicator = document.querySelector('.status-indicator-dot');
   const statusValue = document.getElementById('status-controller-ip');
   
   if (statusIndicator && statusValue) {
     if (isOnline) {
       statusIndicator.className = 'status-indicator-dot online';
-      statusValue.textContent = 'ONLINE (Observer)';
+      const sourceLabel = telemetry && telemetry.source ? telemetry.source.toUpperCase() : 'ONLINE';
+      statusValue.textContent = telemetry ? `${telemetry.controller} · ${sourceLabel}` : 'ONLINE';
       statusValue.style.color = 'var(--color-success)';
     } else {
       statusIndicator.className = 'status-indicator-dot offline';
-      statusValue.textContent = errText ? `FAILED (${errText.substring(0, 15)})` : 'OFFLINE';
+      statusValue.textContent = errText ? `FAILED (${errText.substring(0, 28)})` : 'OFFLINE';
       statusValue.style.color = 'var(--color-danger)';
     }
   }
@@ -410,10 +411,10 @@ function renderOverview() {
   }
 
   const valClients = document.getElementById('metric-total-clients');
-  if (valClients) valClients.textContent = summaryCl.totalAppleClients;
+  if (valClients) valClients.textContent = summaryCl.totalAllClients;
 
   const subVendors = document.getElementById('metric-vendor-breakdown');
-  if (subVendors) subVendors.textContent = `${summaryCl.totalIpads} Apple iPads detected`;
+  if (subVendors) subVendors.textContent = `${summaryCl.totalAppleClients} Apple devices online • ${summaryCl.totalNonAppleClients} non-Apple`; 
 
   const valIpads = document.getElementById('metric-total-ipads');
   if (valIpads) valIpads.textContent = summaryCl.totalIpads;
@@ -467,8 +468,15 @@ function renderOverview() {
     const ch44Count = summaryCh.channelCounts5['44'] || 0;
     const total5 = summaryCh.totalRadios5 || 1;
     const stacked5GPercent = Math.round(((ch40Count + ch44Count) / total5) * 100);
-    cciSummary.textContent = `${stacked5GPercent}% of 5GHz APs stacked on channels 40/44. Highly severe overlap!`;
+    cciSummary.textContent = `${stacked5GPercent}% of 5GHz APs stacked on channels 40/44. DFS in use: ${summaryCh.dfsChannelsInUse.length || 0}.`;
   }
+
+  const connectivitySummary = document.getElementById('fact-connectivity-summary');
+  if (connectivitySummary) {
+    connectivitySummary.textContent = `${summaryCl.connectedSuccessfullyCount} clients connected successfully • ${summaryCl.totalActiveTrafficClients} moving traffic • ${summaryCl.totalErrorClients} with errors/anomalies.`;
+  }
+
+  renderAdminOverviewPanels();
 
   // 3. Automated Diagnosis Alert Board
   const alertsContainer = document.getElementById('overview-alerts');
@@ -1255,7 +1263,7 @@ function renderOptimalGrid() {
   const apArray = Object.values(apList).sort((a, b) => a.name.localeCompare(b.name));
 
   const ch24Options = [1, 6, 11];
-  const ch5Options = [36, 44, 52, 60, 100, 108, 116, 124, 132, 140];
+  const ch5Options = [36, 44, 52, 60, 100, 108, 116, 124, 132, 144];
 
   let driftCount = 0;
   let totalAudits = 0;
@@ -1376,7 +1384,7 @@ function renderOptimalGrid() {
         `<option value="${ch}" ${curCh24 === ch ? 'selected' : ''}>Ch ${ch}</option>`
       ).join('');
       
-      const ch5SelectOptions = [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144].map(ch => 
+      const ch5SelectOptions = [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 144].map(ch => 
         `<option value="${ch}" ${curCh5 === ch ? 'selected' : ''}>Ch ${ch}</option>`
       ).join('');
       
@@ -1606,6 +1614,7 @@ function renderSpeedsTab() {
 
   // Capacity planning widget
   renderCapacityWidget();
+  renderConnectivityAuditTable();
 }
 
 /**
@@ -1984,6 +1993,7 @@ function exportClientsCSV() {
 let chartUtilization = null;
 let chartClients = null;
 let chartSpeeds = null;
+let chartIssues = null;
 
 /**
  * Fetch history from the backend and render the history tab
@@ -1994,7 +2004,7 @@ async function fetchAndRenderHistory() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (data.success && data.samples) {
-      renderHistoryTab(data.samples);
+      renderHistoryTab(data.samples, data.historyInsights || { cards: [], incidents: [] });
     }
   } catch (err) {
     console.error('[History] Failed to load history:', err);
@@ -2015,7 +2025,7 @@ function applyChartDefaults() {
  * Render the History & Trends tab from an array of historical samples
  * @param {Array} samples
  */
-function renderHistoryTab(samples) {
+function renderHistoryTab(samples, historyInsights = { cards: [], incidents: [] }) {
   if (!window.Chart) {
     console.warn('[History] Chart.js not loaded yet.');
     return;
@@ -2026,6 +2036,9 @@ function renderHistoryTab(samples) {
   // Sample count display
   const countEl = document.getElementById('history-sample-count');
   if (countEl) countEl.textContent = samples.length;
+
+  renderHistoryHighlights(historyInsights);
+  renderHistoryIncidents(historyInsights);
 
   const labels = samples.map(s => {
     const d = new Date(s.timestamp);
@@ -2177,7 +2190,56 @@ function renderHistoryTab(samples) {
     });
   }
 
-  // 4. History table (last 20 entries, newest first)
+  // 4. Connectivity & issue trend chart
+  const ctxIssues = document.getElementById('chart-issues');
+  if (ctxIssues) {
+    if (chartIssues) chartIssues.destroy();
+    chartIssues = new Chart(ctxIssues, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Connection Success %',
+            data: samples.map((sample) => sample.connectivitySuccessRate),
+            borderColor: '#10B981',
+            backgroundColor: 'rgba(16, 185, 129, 0.08)',
+            fill: true,
+            tension: 0.3,
+            pointRadius: 3
+          },
+          {
+            label: 'Unstable Clients',
+            data: samples.map((sample) => sample.unstableCount),
+            borderColor: '#EF4444',
+            backgroundColor: 'rgba(239, 68, 68, 0)',
+            fill: false,
+            tension: 0.3,
+            pointRadius: 3
+          },
+          {
+            label: 'Idle Clients',
+            data: samples.map((sample) => sample.idleClients),
+            borderColor: '#F59E0B',
+            backgroundColor: 'rgba(245, 158, 11, 0)',
+            fill: false,
+            tension: 0.3,
+            pointRadius: 3,
+            borderDash: [4, 4]
+          }
+        ]
+      },
+      options: {
+        ...chartOptions,
+        scales: {
+          ...chartOptions.scales,
+          y: { ...chartOptions.scales.y, beginAtZero: true }
+        }
+      }
+    });
+  }
+
+  // 5. History table (last 20 entries, newest first)
   const historyBody = document.getElementById('history-table-body');
   if (historyBody) {
     historyBody.innerHTML = '';
@@ -2196,6 +2258,10 @@ function renderHistoryTab(samples) {
         <td style="color:#818CF8;">↑ ${s.totalUploadMbps}</td>
         <td style="color:${s.criticalCount > 0 ? 'var(--color-danger)' : 'var(--text-dark)'}; font-weight:600;">${s.criticalCount}</td>
         <td style="color:${s.warningCount > 0 ? 'var(--color-warning)' : 'var(--text-dark)'};">${s.warningCount}</td>
+        <td><strong style="color:${getHealthColor(s.connectivitySuccessRate)};">${s.connectivitySuccessRate}%</strong></td>
+        <td>${s.idleClients}</td>
+        <td>${s.activeTrafficClients}</td>
+        <td style="text-transform:uppercase;">${escapeHtml(s.source || 'unknown')}</td>
       `;
       historyBody.appendChild(tr);
     });
@@ -2206,17 +2272,28 @@ function renderHistoryTab(samples) {
  * Clear server-side history is not possible from the client, but clear localStorage sample cache.
  * Notify user.
  */
-function clearHistory() {
-  if (confirm('Clear the displayed history charts? (Server-side buffer persists until server restart.)')) {
-    // Destroy existing charts so they re-initialize empty
+async function clearHistory() {
+  if (!confirm('Clear the server-side history buffer and all displayed charts?')) return;
+
+  try {
+    const res = await fetch('/api/history', { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
     if (chartUtilization) { chartUtilization.destroy(); chartUtilization = null; }
     if (chartClients) { chartClients.destroy(); chartClients = null; }
     if (chartSpeeds) { chartSpeeds.destroy(); chartSpeeds = null; }
+    if (chartIssues) { chartIssues.destroy(); chartIssues = null; }
 
     const historyBody = document.getElementById('history-table-body');
     if (historyBody) historyBody.innerHTML = '';
     const countEl = document.getElementById('history-sample-count');
     if (countEl) countEl.textContent = '0';
+    renderHistoryHighlights({ cards: [], incidents: [] });
+    renderHistoryIncidents({ cards: [], incidents: [] });
+    showToast('History buffer cleared successfully.', 'success');
+  } catch (err) {
+    console.error('[History] Failed to clear history:', err);
+    showToast(`Failed to clear history: ${escapeHtml(err.message)}`, 'error');
   }
 }
 
@@ -2834,6 +2911,211 @@ function renderProximityMap() {
 /**
  * Re-render all dashboard panels and components
  */
+
+function formatRateDisplay(kbps) {
+  return `${Math.round((kbps || 0) / KBPS_PER_MBPS)} Mbps`;
+}
+
+function getConnectionBadgeHtml(client) {
+  const cls = client.connectedSuccessfully ? 'success' : (client.severity === 'critical' ? 'critical' : 'warning');
+  return `<span class="state-badge ${cls}">${client.connectedSuccessfully ? 'Yes' : 'No'} · ${escapeHtml(client.connectionState)}</span>`;
+}
+
+function getTrafficBadgeHtml(client) {
+  const cls = client.trafficState === 'idle' ? 'warning' : (client.trafficState === 'very-active' || client.trafficState === 'active' ? 'success' : 'info');
+  return `<span class="state-badge ${cls}">${escapeHtml(client.trafficState)}</span>`;
+}
+
+function renderInsightList(containerId, items, type) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  if (!items || items.length === 0) {
+    container.innerHTML = `<div class="insight-item ${type === 'issue' ? 'warning' : 'success'}"><strong>${type === 'issue' ? 'No issues detected.' : 'No positive findings stored yet.'}</strong></div>`;
+    return;
+  }
+
+  container.innerHTML = items.map((item) => {
+    const severity = item.severity || (type === 'issue' ? 'warning' : 'success');
+    const detail = item.detail || item.action || '';
+    const action = item.action ? `<div class="insight-action">${escapeHtml(item.action)}</div>` : '';
+    return `
+      <div class="insight-item ${severity}">
+        <strong>${escapeHtml(item.title)}</strong>
+        <p>${escapeHtml(detail)}</p>
+        ${action}
+      </div>
+    `;
+  }).join('');
+}
+
+function renderAdminOverviewPanels() {
+  if (!apiData || !apiData.adminInsights) return;
+
+  const summary = apiData.adminInsights.summary;
+  const telemetry = apiData.telemetry || {};
+
+  const mappings = {
+    'summary-connected-success': summary.connectedSuccessfullyCount,
+    'summary-connected-unstable': summary.unstableCount,
+    'summary-active-traffic': summary.activeTrafficClients,
+    'summary-idle-traffic': summary.idleClients,
+    'summary-error-clients': summary.totalErrorClients,
+    'summary-dfs-count': summary.dfsChannelsInUse
+  };
+
+  Object.entries(mappings).forEach(([id, value]) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+  });
+
+  const sourceBadge = document.getElementById('telemetry-source-badge');
+  if (sourceBadge) {
+    sourceBadge.textContent = `Source: ${(telemetry.source || 'unknown').toUpperCase()}`;
+  }
+
+  const connectivityBody = document.getElementById('connectivity-overview-body');
+  if (connectivityBody) {
+    connectivityBody.innerHTML = '';
+    apiData.adminInsights.connectivityRows.slice(0, 8).forEach((client) => {
+      const row = document.createElement('tr');
+      row.innerHTML = `
+        <td><strong>${escapeHtml(client.hostname)}</strong><span class="table-subline">${escapeHtml(client.apName)}</span></td>
+        <td>${getConnectionBadgeHtml(client)}</td>
+        <td>${getTrafficBadgeHtml(client)}</td>
+        <td>${formatRateDisplay(client.txRateKbps)}</td>
+        <td>${formatRateDisplay(client.rxRateKbps)}</td>
+        <td>${escapeHtml(client.errorSummary)}</td>
+      `;
+      connectivityBody.appendChild(row);
+    });
+  }
+
+  renderInsightList('issues-detected-list', apiData.adminInsights.issuesDetected, 'issue');
+  renderInsightList('no-issues-list', apiData.adminInsights.noIssuesDetected, 'ok');
+
+  const solutionsList = document.getElementById('solutions-list');
+  if (solutionsList) {
+    const solutions = apiData.adminInsights.recommendedSolutions || [];
+    solutionsList.innerHTML = solutions.length
+      ? solutions.map((solution) => `<div class="solution-item">${escapeHtml(solution)}</div>`).join('')
+      : '<div class="solution-item success">No remediation needed right now.</div>';
+  }
+
+  renderLogAggregatorOutput(apiData.logAggregator ? apiData.logAggregator.text : 'Waiting for diagnostics...');
+}
+
+function renderLogAggregatorOutput(text) {
+  const output = document.getElementById('log-aggregator-output');
+  if (output) output.value = text || 'Waiting for diagnostics...';
+}
+
+async function refreshLogAggregator(force = false) {
+  try {
+    const res = await fetch(force ? '/api/log-aggregate?force=true' : '/api/log-aggregate');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const payload = await res.json();
+    if (!payload.success) throw new Error(payload.error || 'Failed to refresh log aggregator');
+    renderLogAggregatorOutput(payload.text);
+    showToast('Log aggregator refreshed.', 'success');
+  } catch (err) {
+    console.error('[Logs] Failed to refresh log aggregator:', err);
+    showToast(`Failed to refresh logs: ${escapeHtml(err.message)}`, 'error');
+  }
+}
+
+async function copyLogAggregator() {
+  const output = document.getElementById('log-aggregator-output');
+  if (!output || !output.value) return;
+
+  try {
+    await navigator.clipboard.writeText(output.value);
+    showToast('Log aggregator copied to clipboard.', 'success');
+  } catch (err) {
+    output.select();
+    document.execCommand('copy');
+    showToast('Log aggregator copied using the browser fallback.', 'info');
+  }
+}
+
+function downloadLogAggregator() {
+  const output = document.getElementById('log-aggregator-output');
+  if (!output || !output.value) return;
+
+  const blob = new Blob([output.value], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `unifi-health-log-${new Date().toISOString().slice(0, 19).replace(/[:]/g, '-')}.txt`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function renderConnectivityAuditTable() {
+  const tbody = document.getElementById('connectivity-audit-body');
+  if (!tbody || !apiData || !apiData.adminInsights) return;
+
+  tbody.innerHTML = '';
+  apiData.adminInsights.connectivityRows.forEach((client) => {
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td>
+        <strong>${escapeHtml(client.hostname)}</strong>
+        <span class="table-subline">${escapeHtml(client.mac)}</span>
+      </td>
+      <td>${escapeHtml(client.apName)}</td>
+      <td>${getConnectionBadgeHtml(client)}</td>
+      <td>${getTrafficBadgeHtml(client)}</td>
+      <td>↓ ${formatRateDisplay(client.txRateKbps)}</td>
+      <td>↑ ${formatRateDisplay(client.rxRateKbps)}</td>
+      <td>${escapeHtml(client.errorSummary)}</td>
+      <td class="diag-action-text">${escapeHtml(client.recommendation)}</td>
+    `;
+    tbody.appendChild(row);
+  });
+}
+
+function renderHistoryHighlights(historyInsights) {
+  const container = document.getElementById('history-highlights-grid');
+  if (!container) return;
+
+  const cards = (historyInsights && historyInsights.cards) || [];
+  if (!cards.length) {
+    container.innerHTML = '<div class="glass-card"><div class="card-body text-muted">No historical samples stored yet. Fetch diagnostics to start building trend insights.</div></div>';
+    return;
+  }
+
+  container.innerHTML = cards.map((card) => `
+    <div class="glass-card history-highlight-card">
+      <div class="card-body">
+        <span class="metric-title">${escapeHtml(card.title)}</span>
+        <h3 class="metric-value" style="font-size:1.8rem; margin-top:10px;">${escapeHtml(String(card.value))}</h3>
+        <p class="metric-sub">${escapeHtml(card.detail)}</p>
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderHistoryIncidents(historyInsights) {
+  const container = document.getElementById('history-incidents-list');
+  if (!container) return;
+
+  const incidents = (historyInsights && historyInsights.incidents) || [];
+  if (!incidents.length) {
+    container.innerHTML = '<div class="log-empty-state"><i data-lucide="check-circle-2"></i><p>No incidents in stored history yet.</p></div>';
+    if (window.lucide) window.lucide.createIcons();
+    return;
+  }
+
+  container.innerHTML = incidents.map((incident) => `
+    <div class="history-incident-item">
+      <strong>${escapeHtml(incident.title)}</strong>
+      <span>${escapeHtml(incident.time)}</span>
+      <p>${escapeHtml(incident.detail)}</p>
+    </div>
+  `).join('');
+}
+
 function renderAllTabs() {
   renderOverview();
   renderSpeedsTab();

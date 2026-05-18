@@ -2491,3 +2491,180 @@ input:checked + .slider:before {
   70% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
   100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
 }
+
+/* ======================================================================
+   Admin insights, connectivity audit, and log aggregation
+   ====================================================================== */
+.admin-grid {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr;
+  gap: 24px;
+}
+
+.connectivity-mini-grid,
+.history-highlights-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 14px;
+}
+
+.mini-summary-card,
+.history-highlight-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-glass);
+  border-radius: 14px;
+  padding: 16px;
+}
+
+.mini-summary-card span,
+.section-mini-title {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  display: block;
+  margin-bottom: 8px;
+}
+
+.mini-summary-card strong {
+  font-family: var(--font-display);
+  font-size: 1.4rem;
+}
+
+.compact-table .table-subline,
+.table-subline {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-dark);
+  font-size: 0.74rem;
+}
+
+.issues-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+
+.insight-list,
+.solutions-list,
+.history-incidents-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.insight-item,
+.solution-item,
+.history-incident-item {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--border-glass);
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.insight-item strong,
+.history-incident-item strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.insight-item p,
+.insight-action,
+.solution-item,
+.history-incident-item p,
+.history-incident-item span {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.insight-item.critical {
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.insight-item.warning,
+.solution-item {
+  border-color: rgba(245, 158, 11, 0.25);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.insight-item.success,
+.solution-item.success {
+  border-color: rgba(16, 185, 129, 0.25);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.insight-item.info,
+.state-badge.info {
+  border-color: rgba(59, 130, 246, 0.25);
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.solutions-block {
+  margin-top: 18px;
+}
+
+.copy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.log-aggregator-output {
+  width: 100%;
+  min-height: 380px;
+  resize: vertical;
+  border-radius: 14px;
+  border: 1px solid var(--border-glass);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-main);
+  padding: 16px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.state-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 0.75rem;
+  text-transform: capitalize;
+}
+
+.state-badge.success {
+  color: #A7F3D0;
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.25);
+}
+
+.state-badge.warning {
+  color: #FCD34D;
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.25);
+}
+
+.state-badge.critical {
+  color: #FCA5A5;
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.25);
+}
+
+.history-incidents-list {
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.history-incident-item span {
+  display: block;
+  margin-bottom: 8px;
+}
+
+@media (max-width: 1200px) {
+  .admin-grid,
+  .issues-split {
+    grid-template-columns: 1fr;
+  }
+}

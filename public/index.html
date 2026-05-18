@@ -225,12 +225,107 @@
                 <div class="fact-item">
                   <i data-lucide="wifi-off" class="text-warning"></i>
                   <div>
-                    <h4>iPad Dropouts Cause</h4>
-                    <p>All APs sharing channels 40/44 force iPads into packet collision state.</p>
+                    <h4>Connectivity Health</h4>
+                    <p id="fact-connectivity-summary">Checking live client connection quality, traffic activity, and error rates.</p>
                   </div>
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+
+        <div class="admin-grid mt-4">
+          <div class="glass-card">
+            <div class="card-header flex-header">
+              <div style="display:flex; align-items:center; gap:10px;">
+                <div class="header-icon bg-teal-alpha"><i data-lucide="plug-zap"></i></div>
+                <h3>Connectivity Operations Summary</h3>
+              </div>
+              <span class="count-badge" id="telemetry-source-badge">Source: --</span>
+            </div>
+            <div class="card-body">
+              <div class="connectivity-mini-grid">
+                <div class="mini-summary-card">
+                  <span>Connected Successfully</span>
+                  <strong id="summary-connected-success">0</strong>
+                </div>
+                <div class="mini-summary-card">
+                  <span>Unstable Clients</span>
+                  <strong id="summary-connected-unstable">0</strong>
+                </div>
+                <div class="mini-summary-card">
+                  <span>Active Traffic</span>
+                  <strong id="summary-active-traffic">0</strong>
+                </div>
+                <div class="mini-summary-card">
+                  <span>Idle Clients</span>
+                  <strong id="summary-idle-traffic">0</strong>
+                </div>
+                <div class="mini-summary-card">
+                  <span>Error Signals</span>
+                  <strong id="summary-error-clients">0</strong>
+                </div>
+                <div class="mini-summary-card">
+                  <span>DFS Channels In Use</span>
+                  <strong id="summary-dfs-count">0</strong>
+                </div>
+              </div>
+              <div class="card-body overflow-x" style="padding:20px 0 0;">
+                <table class="premium-table compact-table">
+                  <thead>
+                    <tr>
+                      <th>Client</th>
+                      <th>Connected?</th>
+                      <th>Traffic</th>
+                      <th>Download</th>
+                      <th>Upload</th>
+                      <th>Errors</th>
+                    </tr>
+                  </thead>
+                  <tbody id="connectivity-overview-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="glass-card">
+            <div class="card-header">
+              <div class="header-icon bg-warning-alpha"><i data-lucide="badge-alert"></i></div>
+              <h3>Issues Detected / No Issues</h3>
+            </div>
+            <div class="card-body">
+              <div class="issues-split">
+                <div>
+                  <h4 class="section-mini-title">Issues Detected</h4>
+                  <div class="insight-list" id="issues-detected-list"></div>
+                </div>
+                <div>
+                  <h4 class="section-mini-title">No Issues</h4>
+                  <div class="insight-list" id="no-issues-list"></div>
+                </div>
+              </div>
+              <div class="solutions-block">
+                <h4 class="section-mini-title">Possible Solutions</h4>
+                <div class="solutions-list" id="solutions-list"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="glass-card mt-4">
+          <div class="card-header flex-header">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <div class="header-icon bg-blue-alpha"><i data-lucide="logs"></i></div>
+              <h3>Copy/Paste Log Aggregator</h3>
+            </div>
+            <div class="copy-actions">
+              <button class="btn-subtle" onclick="refreshLogAggregator(true)"><i data-lucide="refresh-cw"></i> Refresh</button>
+              <button class="btn-subtle" onclick="copyLogAggregator()"><i data-lucide="copy"></i> Copy</button>
+              <button class="btn-subtle" onclick="downloadLogAggregator()"><i data-lucide="download"></i> Download</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <textarea id="log-aggregator-output" class="log-aggregator-output" readonly>Waiting for diagnostics...</textarea>
           </div>
         </div>
       </section>
@@ -376,6 +471,33 @@
           </div>
         </div>
 
+        <div class="glass-card mt-4">
+          <div class="card-header flex-header">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <div class="header-icon bg-blue-alpha"><i data-lucide="waypoints"></i></div>
+              <h3>Client Connectivity Audit</h3>
+            </div>
+            <span class="text-muted" style="font-size:0.8rem;">Did they connect, transfer traffic, and throw errors?</span>
+          </div>
+          <div class="card-body overflow-x">
+            <table class="premium-table">
+              <thead>
+                <tr>
+                  <th>Client</th>
+                  <th>Access Point</th>
+                  <th>Connected?</th>
+                  <th>Traffic State</th>
+                  <th>Download</th>
+                  <th>Upload</th>
+                  <th>Errors</th>
+                  <th>Recommended Action</th>
+                </tr>
+              </thead>
+              <tbody id="connectivity-audit-body"></tbody>
+            </table>
+          </div>
+        </div>
+
       </section>
 
       <!-- TAB 3: HISTORY & TRENDS -->
@@ -405,6 +527,8 @@
             </div>
           </div>
         </div>
+
+        <div class="history-highlights-grid mb-4" id="history-highlights-grid"></div>
 
         <!-- Utilization + Clients Charts Row -->
         <div class="history-charts-grid">
@@ -437,6 +561,27 @@
           </div>
           <div class="card-body chart-container chart-wide">
             <canvas id="chart-speeds"></canvas>
+          </div>
+        </div>
+
+        <div class="history-charts-grid mt-4">
+          <div class="glass-card">
+            <div class="card-header">
+              <div class="header-icon bg-warning-alpha"><i data-lucide="siren"></i></div>
+              <h3>Connectivity & Issue Trend</h3>
+            </div>
+            <div class="card-body chart-container">
+              <canvas id="chart-issues"></canvas>
+            </div>
+          </div>
+          <div class="glass-card">
+            <div class="card-header">
+              <div class="header-icon bg-rose-alpha"><i data-lucide="history"></i></div>
+              <h3>Recent Historical Incidents</h3>
+            </div>
+            <div class="card-body">
+              <div class="history-incidents-list" id="history-incidents-list"></div>
+            </div>
           </div>
         </div>
 
@@ -789,7 +934,6 @@
                         <span class="ch-chip">128 (DFS)</span>
                         <span class="ch-chip">132 (DFS)</span>
                         <span class="ch-chip">136 (DFS)</span>
-                        <span class="ch-chip">140 (DFS)</span>
                         <span class="ch-chip">144 (DFS)</span>
                       </div>
                     </li>
