@@ -824,6 +824,15 @@ function renderIpadsTab() {
  * iPad Filter and Roster populating
  */
 function filterIpads() {
+  const formatBytes = (bytes, decimals = 2) => {
+    if (!bytes || bytes === 0) return '0 B';
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+  };
+
   const query = document.getElementById('ipad-search').value.toLowerCase();
   const statusFilter = document.getElementById('ipad-filter-status').value;
   const typeFilter = document.getElementById('ipad-filter-type').value;
@@ -865,7 +874,7 @@ function filterIpads() {
     
     // Render symptom tags
     const symptomTags = c.flags.map(f => {
-      const cls = (f.includes('Critical') || f.includes('Poor') || f.includes('Weak')) ? 'danger' : 'warning';
+      const cls = (f.includes('Critical') || f.includes('Poor') || f.includes('Weak') || f.includes('Failure')) ? 'danger' : 'warning';
       return `<span class="symptom-tag ${cls}">${f}</span>`;
     }).join('');
 
@@ -884,6 +893,23 @@ function filterIpads() {
       iconName = 'smartphone';
     }
 
+    // Format traffic bytes and roaming counts
+    const downloadStr = formatBytes(c.rxBytes);
+    const uploadStr = formatBytes(c.txBytes);
+    const trafficHtml = `<span style="display:block; font-size:0.73rem; color:var(--text-dark); margin-top:2px;">📥 ${downloadStr} | 📤 ${uploadStr}</span>`;
+
+    const roamCount = c.roamCount || 0;
+    const roamHtml = roamCount > 5 
+      ? `<strong style="color:var(--color-danger); font-size:0.73rem; display:block; margin-top:2px;">🔄 ${roamCount} roams (Frequent)</strong>`
+      : `<span style="font-size:0.73rem; color:var(--text-dark); display:block; margin-top:2px;">🔄 ${roamCount} roams</span>`;
+
+    // IP validation display (especially DHCP failures)
+    const isSelfAssigned = c.ip.startsWith('169.254');
+    const hasNoIp = c.ip === 'No IP' || isSelfAssigned;
+    const ipHtml = hasNoIp
+      ? `<strong style="color:var(--color-danger); font-size:0.82rem; display:block;">DHCP FAILURE</strong>`
+      : `<span style="display:block; font-weight:550; font-size:0.82rem;">${c.ip}</span>`;
+
     tr.innerHTML = `
       <td>
         <div style="font-weight:700; color:white; display:flex; align-items:center; gap:8px;">
@@ -896,8 +922,10 @@ function filterIpads() {
         </div>
       </td>
       <td>
-        <span style="display:block; font-weight:550; font-size:0.82rem;">${c.ip}</span>
+        ${ipHtml}
         <span style="display:block; font-family:monospace; font-size:0.75rem; color:var(--text-dark);">${c.mac}</span>
+        ${trafficHtml}
+        ${roamHtml}
       </td>
       <td>
         <strong style="color:white; display:block;">${escapeHtml(c.apName)}</strong>
@@ -1313,6 +1341,7 @@ function renderOptimalGrid() {
     });
   });
 
+  // Pre-calculate all values to sort by Pareto Impact Score (20-80 Rule)
   apArray.forEach((ap, index) => {
     let floor = 'EG';
     let floorOffset = 0;
@@ -1334,6 +1363,58 @@ function renderOptimalGrid() {
     const optCh24 = ch24Options[(index + Math.floor(floorOffset / 3)) % ch24Options.length];
     const optCh5 = ch5Options[(index + floorOffset) % ch5Options.length];
 
+    const r24 = ap.radios.ng;
+    const r5 = ap.radios.na;
+
+    const curCh24 = r24 ? r24.channel : null;
+    const curPower24 = r24 ? r24.tx_power : null;
+    const curCh5 = r5 ? r5.channel : null;
+    const curPower5 = r5 ? r5.tx_power : null;
+    const curMinRssi = r24 && r24.min_rssi_enabled ? r24.min_rssi : (r5 && r5.min_rssi_enabled ? r5.min_rssi : null);
+
+    const isCh24Drift = r24 && curCh24 !== optCh24;
+    const isCh5Drift = r5 && curCh5 !== optCh5;
+    const isPower24Drift = r24 && (r24.tx_power_mode === 'auto' || (curPower24 !== null && curPower24 > 10));
+    const isPower5Drift = r5 && (r5.tx_power_mode === 'auto' || (curPower5 !== null && curPower5 > 16));
+    const isMinRssiDrift = !curMinRssi || curMinRssi !== -75;
+
+    const hasDrift = isCh24Drift || isCh5Drift || isPower24Drift || isPower5Drift || isMinRssiDrift;
+
+    const activeOverlaps = apOverlapsMap[ap.mac];
+    const totalOverlaps = (activeOverlaps?.ng || 0) + (activeOverlaps?.na || 0);
+    const clientsCount = (r24?.num_sta || 0) + (r5?.num_sta || 0);
+    const maxLoad = Math.max(r24?.cu_total || 0, r5?.cu_total || 0);
+
+    ap.floor = floor;
+    ap.optCh24 = optCh24;
+    ap.optCh5 = optCh5;
+    ap.curCh24 = curCh24;
+    ap.curPower24 = curPower24;
+    ap.curCh5 = curCh5;
+    ap.curPower5 = curPower5;
+    ap.curMinRssi = curMinRssi;
+    ap.isCh24Drift = isCh24Drift;
+    ap.isCh5Drift = isCh5Drift;
+    ap.isPower24Drift = isPower24Drift;
+    ap.isPower5Drift = isPower5Drift;
+    ap.isMinRssiDrift = isMinRssiDrift;
+    ap.hasDrift = hasDrift;
+    ap.totalOverlaps = totalOverlaps;
+    ap.clientsCount = clientsCount;
+    ap.maxLoad = maxLoad;
+
+    // Pareto Score: Drifted APs have priority. Sorted by Overlaps (x1000) + Clients (x50) + Max Load (x1)
+    ap.impactScore = (hasDrift ? 1000000 : 0) + (totalOverlaps * 1000) + (clientsCount * 50) + maxLoad;
+  });
+
+  // Sort by impactScore descending to bring high-impact congested AP drift resolutions to the top!
+  apArray.sort((a, b) => b.impactScore - a.impactScore);
+
+  apArray.forEach((ap) => {
+    const floor = ap.floor;
+    const optCh24 = ap.optCh24;
+    const optCh5 = ap.optCh5;
+
     const optPower24 = 9;
     const optPower5 = 15;
     const optMinRssi = -75;
@@ -1341,21 +1422,19 @@ function renderOptimalGrid() {
     const r24 = ap.radios.ng;
     const r5 = ap.radios.na;
 
-    const curCh24 = r24 ? r24.channel : null;
-    const curPower24 = r24 ? r24.tx_power : null;
+    const curCh24 = ap.curCh24;
+    const curPower24 = ap.curPower24;
+    const curCh5 = ap.curCh5;
+    const curPower5 = ap.curPower5;
+    const curMinRssi = ap.curMinRssi;
 
-    const curCh5 = r5 ? r5.channel : null;
-    const curPower5 = r5 ? r5.tx_power : null;
+    const isCh24Drift = ap.isCh24Drift;
+    const isCh5Drift = ap.isCh5Drift;
+    const isPower24Drift = ap.isPower24Drift;
+    const isPower5Drift = ap.isPower5Drift;
+    const isMinRssiDrift = ap.isMinRssiDrift;
 
-    const curMinRssi = r24 && r24.min_rssi_enabled ? r24.min_rssi : (r5 && r5.min_rssi_enabled ? r5.min_rssi : null);
-
-    const isCh24Drift = r24 && curCh24 !== optCh24;
-    const isCh5Drift = r5 && curCh5 !== optCh5;
-    const isPower24Drift = r24 && (r24.tx_power_mode === 'auto' || (curPower24 !== null && curPower24 > 10));
-    const isPower5Drift = r5 && (r5.tx_power_mode === 'auto' || (curPower5 !== null && curPower5 > 16));
-    const isMinRssiDrift = !curMinRssi || curMinRssi !== optMinRssi;
-
-    const hasDrift = isCh24Drift || isCh5Drift || isPower24Drift || isPower5Drift || isMinRssiDrift;
+    const hasDrift = ap.hasDrift;
 
     if (hasDrift) {
       driftCount++;

@@ -210,7 +210,11 @@ class NetworkAnalyzer {
         signal: c.signal || -100,
         txRateKbps: c.tx_rate || 0,
         rxRateKbps: c.rx_rate || 0,
+        txBytes: c.tx_bytes || 0,
+        rxBytes: c.rx_bytes || 0,
+        totalBytes: (c.tx_bytes || 0) + (c.rx_bytes || 0),
         txRetriesPct: c.wifi_tx_retries_percentage || 0,
+        roamCount: c.roam_count || 0,
         channel: c.channel || 0,
         band: c.radio === 'ng' ? '2.4GHz' : '5GHz',
         apMac: c.ap_mac,
@@ -264,10 +268,31 @@ class NetworkAnalyzer {
         if (diag.severity !== 'critical') diag.severity = 'warning';
       }
 
-      // 6. Formulate specialized actions based on symptoms
+      // 6. Diagnose Reconnection / Roam Counts (connects/reconnects a few times)
+      if (diag.roamCount > 8) {
+        diag.flags.push(`Frequent Reconnection (${diag.roamCount} roams)`);
+        diag.severity = 'critical';
+      } else if (diag.roamCount > 4) {
+        diag.flags.push(`Moderate Roaming (${diag.roamCount} roams)`);
+        if (diag.severity !== 'critical') diag.severity = 'warning';
+      }
+
+      // 7. Diagnose IP Assigned State (DHCP failures or self-assigned IPs)
+      const isSelfAssigned = diag.ip.startsWith('169.254');
+      const hasNoIp = diag.ip === 'No IP' || isSelfAssigned;
+      if (hasNoIp) {
+        diag.flags.push('No IP Address (DHCP Failure)');
+        diag.severity = 'critical';
+      }
+
+      // 8. Formulate specialized actions based on symptoms
       const deviceWord = isIpad ? 'iPad' : 'client device';
       if (diag.severity === 'critical') {
-        if (diag.signal < -80) {
+        if (hasNoIp) {
+          diag.recommendation = `The ${deviceWord} failed to obtain a valid IP address. Check your DHCP scope limits, VLAN subnet bindings, or restart the DHCP service.`;
+        } else if (diag.roamCount > 8) {
+          diag.recommendation = `Frequent reassociations/roams (${diag.roamCount}). Reduce overlapping cell coverage, adjust power output, or optimize channel configuration.`;
+        } else if (diag.signal < -80) {
           diag.recommendation = `The ${deviceWord} is too far from the Access Point or blocked by walls. Relocate the client closer to the AP or install an AP in this coverage dead zone.`;
         } else if (diag.txRetriesPct > 40) {
           diag.recommendation = `Severe local RF interference on Channel ${diag.channel}. Change the connected AP (${diag.apName}) channel away from the heavily clogged Channel 6/40/44.`;
@@ -275,7 +300,9 @@ class NetworkAnalyzer {
           diag.recommendation = `Poor network negotiation. Try toggling Wi-Fi off and on on the ${deviceWord}, or renew the DHCP lease. Ensure the AP does not have high CPU load.`;
         }
       } else if (diag.severity === 'warning') {
-        if (diag.band === '2.4GHz') {
+        if (diag.roamCount > 4) {
+          diag.recommendation = `Moderate roaming detected. Client is moving frequently between AP cells or AP signal thresholds are triggering minor roams.`;
+        } else if (diag.band === '2.4GHz') {
           diag.recommendation = `${deviceWord} is stuck on the slow, congested 2.4GHz band. Enable "Band Steering" on the UniFi SSID settings to prefer 5GHz, or set separate 5GHz SSID.`;
         } else if (diag.signal < -72) {
           diag.recommendation = 'Marginal signal strength. Verify that the user is in the same room as the AP, and ensure walls are not blocking the line-of-sight.';
@@ -320,7 +347,7 @@ class NetworkAnalyzer {
     return {
       summary: {
         totalAppleClients: appleClients.length,
-        totalIpads: ipadDiagnostics.filter(d => d.isIpad).length,
+        totalIpads: clientDiagnostics.filter(d => d.isIpad).length,
         criticalCount,
         warningCount,
         healthyCount,
@@ -329,7 +356,7 @@ class NetworkAnalyzer {
         totalDownloadKbps,
         totalUploadKbps
       },
-      clients: ipadDiagnostics.sort((a, b) => {
+      clients: clientDiagnostics.sort((a, b) => {
         // Sort critical first, then warning, then healthy
         const score = { 'critical': 3, 'warning': 2, 'healthy': 1 };
         return score[b.severity] - score[a.severity] || (a.hostname.localeCompare(b.hostname));

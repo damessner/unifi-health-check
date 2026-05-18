@@ -75,6 +75,21 @@ docker compose up -d --build
 
 ---
 
+## 🔄 One-Click Application Updates
+
+To update your existing installation to the latest version of the UniFi Network Health & Channel Analyzer while fully preserving all your `.env` settings and credentials, simply run the following one-liner inside your **Debian Container/Server terminal** as root:
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/damessner/unifi-health-check/main/setup-lxc.sh)"
+```
+
+The script is built to be completely non-destructive:
+- It **safeguards your existing credentials** and never overwrites your current `.env` file.
+- It pulls all new updates from the remote repository.
+- It automatically handles container rebuilds and restarts the service smoothly on port `2943`.
+
+---
+
 ## ⚙️ Environment Configuration
 
 The application is configured using a `.env` file located in the root of the project directory.
