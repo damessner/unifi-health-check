@@ -670,7 +670,7 @@
           <div class="print-header-top">
             <div class="print-title-area">
               <h1 class="print-main-title">UniFi Network Health & Channel Optimization Blueprint</h1>
-              <p class="print-sub-title">Target Environment: Mittelschule Telfs — Wifi Remediation & Tuning Plan</p>
+              <p class="print-sub-title">Target Environment: UniFi Deployment — Wi-Fi Remediation & Tuning Plan</p>
             </div>
             <div class="print-meta-area">
               <p><strong>Generated on:</strong> <span id="print-date">Just now</span></p>
@@ -695,7 +695,7 @@
             <div class="card-header flex-header" style="margin-bottom:12px;">
               <div style="display:flex; align-items:center; gap:8px;">
                 <div class="header-icon bg-blue-alpha"><i data-lucide="network"></i></div>
-                <h3>Mittelschule Telfs — RF Neighborhood Proximity Map</h3>
+                <h3>RF Neighborhood Proximity Map</h3>
               </div>
               <div style="display:flex; align-items:center; gap:10px;">
                 <button class="btn-refresh" style="font-size:0.75rem; padding:4px 10px; height:auto; border-radius:6px; background:rgba(239, 68, 68, 0.1); border-color:rgba(239, 68, 68, 0.2); color:#F87171;" onclick="resetSandboxOverrides()"><i data-lucide="trash-2" style="width:12px; height:12px; display:inline-block; vertical-align:middle; margin-right:4px;"></i>Reset Tuning</button>
@@ -703,7 +703,7 @@
               </div>
             </div>
             <div class="card-body">
-              <p class="mb-3 text-muted" style="font-size:0.82rem;">This graph models physical classroom locations at Mittelschule Telfs. Adjacent rooms share heavy horizontal RF bounds. Vertical boundaries indicate structural ceiling overlaps. Select a card to view active neighbors and co-channel interference hotspots.</p>
+              <p class="mb-3 text-muted" style="font-size:0.82rem;">This graph models AP neighborhood relationships from live telemetry. Select a card to view active neighbors and co-channel interference hotspots.</p>
               
               <div class="school-floors-grid">
                 <!-- 2OG: Second Floor -->
@@ -760,15 +760,15 @@
               <i data-lucide="split" class="step-icon text-critical"></i>
               <div class="step-text">
                 <h3>Resolve 5GHz Co-Channel Overlap (Catastrophic)</h3>
-                <p class="mb-3">Currently, **96% of your 5GHz Access Points** (47 devices) are locked onto just two adjacent channels: Channel 40 and 44. This means almost all APs are constantly talking over each other and waiting for airtime, which causes iPads to drop connections and experience snail-paced speeds.</p>
+                  <p class="mb-3">If a high percentage of your 5GHz access points are locked onto two adjacent channels (for example 40 and 44), APs end up contending for airtime and clients can experience unstable throughput.</p>
                 
                 <div class="action-box">
                   <h4>Recommended Actions in UniFi Settings (Network 10.0.160):</h4>
                   <ul>
-                    <li>Open your **UniFi Controller Network Dashboard** (`https://172.16.0.200:8443`).</li>
-                    <li>Navigate to the **Channel AI** tab (represented by the **sine wave icon** on the left-hand sidebar). Note: Network 10.0.160 uses this dedicated AI optimizer instead of legacy nightly global optimization.</li>
-                    <li>Under the **5 GHz Channel Plan** section, check/enable the excluded DFS channels (**52 to 144**). This instantly expands your available spectrum from just 2 to 10+ non-overlapping 40MHz channel paths.</li>
-                    <li>Click the **Optimize** button to trigger the UniFi AI optimization, which will immediately re-assign your 47 APs across the newly enabled clean channels.</li>
+                    <li>Open your **UniFi Controller Network Dashboard** (for example `https://controller-host:8443`).</li>
+                    <li>Navigate to your controller's **Channel AI / RF Optimization** section.</li>
+                    <li>Under the **5 GHz Channel Plan** section, enable available DFS channels (**52 to 144**) where allowed in your region.</li>
+                    <li>Trigger optimization or manually rebalance AP channels across the expanded channel set.</li>
                     <li><strong>Alternative (Manual Grid Assignment):</strong> If you assign channels manually, distribute your 5GHz channels in a grid pattern. Utilize the full spectrum of non-overlapping channels:
                       <div class="channel-chips-container mt-2">
                         <span class="ch-chip">36</span>
@@ -888,7 +888,7 @@
 
         <!-- Dynamic Print Report Footer -->
         <div class="print-report-footer">
-          <p>UniFi Diagnostics Dashboard — Built for Mittelschule Telfs. Generated from live controller telemetry. Status: Active. Manual Sync Mode.</p>
+          <p>UniFi Diagnostics Dashboard — Generated from live controller telemetry. Status: Active. Manual Sync Mode.</p>
         </div>
       </section>
       

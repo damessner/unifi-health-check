@@ -11,6 +11,15 @@ const PORT = config.server.port;
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 
+app.use('/api', (req, res, next) => {
+  if (!config.server.apiToken) return next();
+  const provided = req.get('x-api-token');
+  if (provided !== config.server.apiToken) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
+  next();
+});
+
 /** Threshold in ms below which a data fetch is considered 'fresh from the controller' */
 const FRESH_DATA_THRESHOLD_MS = 2000;
 
@@ -45,6 +54,36 @@ function pushHistorySnapshot(channels, clients) {
   if (historyBuffer.length > HISTORY_MAX_SAMPLES) {
     historyBuffer.shift();
   }
+}
+
+function buildApsModel(channelAnalysis) {
+  const map = {};
+  (channelAnalysis.radios || []).forEach((r) => {
+    if (!map[r.apMac]) {
+      map[r.apMac] = {
+        mac: r.apMac,
+        name: r.apName,
+        ip: r.ip,
+        model: r.model,
+        radios: {}
+      };
+    }
+    map[r.apMac].radios[r.radio] = {
+      channel: r.channel,
+      cu_total: r.cu_total,
+      cu_self_rx: r.cu_self_rx,
+      cu_self_tx: r.cu_self_tx,
+      cci_count: r.cci_count,
+      tx_retries_pct: r.tx_retries_pct,
+      tx_power: r.tx_power,
+      tx_power_mode: r.tx_power_mode,
+      configured_tx_power: r.configured_tx_power,
+      min_rssi_enabled: r.min_rssi_enabled,
+      min_rssi: r.min_rssi,
+      bw: r.bw
+    };
+  });
+  return Object.values(map);
 }
 
 /**
@@ -117,6 +156,7 @@ app.get('/api/diagnostics', async (req, res) => {
     
     const channelAnalysis = analyzer.analyzeChannels(devices);
     const clientAnalysis = analyzer.analyzeClients(clients, devices);
+    const apsModel = buildApsModel(channelAnalysis);
 
     // Only push to history when data is fresh from the controller (not served from cache)
     if (Date.now() - cache.lastFetch < FRESH_DATA_THRESHOLD_MS) {
@@ -127,6 +167,7 @@ app.get('/api/diagnostics', async (req, res) => {
       success: true,
       timestamp: Date.now(),
       cacheAgeMs: Date.now() - cache.lastFetch,
+      aps: apsModel,
       channels: channelAnalysis,
       clients: clientAnalysis
     });
@@ -149,9 +190,13 @@ app.get('*', (req, res) => {
 async function startServer() {
   console.log('=== UniFi Diagnostics System Startup ===');
   try {
+    if (process.env.MOCK_MODE === 'true') {
+      console.log('[Startup] MOCK_MODE=true detected. Skipping initial UniFi controller login.');
+    } else {
     // Perform initial login to verify connection on startup
-    await unifiClient.login();
-    console.log('[Startup] Connection to UniFi Controller verified successfully!');
+      await unifiClient.login();
+      console.log('[Startup] Connection to UniFi Controller verified successfully!');
+    }
   } catch (err) {
     console.warn(`[Startup Warning] Could not connect to UniFi Controller: ${err.message}`);
     console.warn('[Startup Warning] Server will start but API requests may fail until connection is restored.');
