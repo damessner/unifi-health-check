@@ -34,6 +34,7 @@ const cache = {
 // In-memory history ring buffer for trend analysis (max 60 samples)
 const historyBuffer = [];
 const HISTORY_MAX_SAMPLES = 60;
+let serverInstance = null;
 
 /**
  * Push a snapshot into the history ring buffer after a fresh data fetch.
@@ -231,7 +232,7 @@ async function startServer() {
     console.warn('[Startup Warning] Server will start but API requests may fail until connection is restored.');
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  serverInstance = app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n[Server] Network Health dashboard is running!`);
     console.log(`[Server] Local URL:   http://localhost:${PORT}`);
     console.log(`[Server] Network URL: http://0.0.0.0:${PORT}`);
@@ -239,4 +240,22 @@ async function startServer() {
   });
 }
 
+async function shutdown(signal) {
+  console.log(`\n[Server] Received ${signal}. Shutting down...`);
+
+  if (serverInstance) {
+    await new Promise((resolve) => serverInstance.close(resolve));
+  }
+
+  try {
+    await historyStore.close();
+  } catch (err) {
+    console.warn(`[History] Failed to close SQLite cleanly: ${err.message}`);
+  }
+
+  process.exit(0);
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
 startServer();

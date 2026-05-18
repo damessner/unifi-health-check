@@ -197,6 +197,24 @@ class HistoryStore {
       count: countRow?.total || 0
     };
   }
+
+  close() {
+    if (!this.db) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve, reject) => {
+      this.db.close((err) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        this.db = null;
+        this.enabled = false;
+        resolve();
+      });
+    });
+  }
 }
 
 module.exports = new HistoryStore();
