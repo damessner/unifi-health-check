@@ -8,17 +8,36 @@ A modern, high-fidelity real-time network health diagnostics and channel analysi
 
 ---
 
-## 🚀 One-Click Debian LXC & Docker Auto-Installation
+## 🚀 One-Click Proxmox VE Host Installation
 
-For Proxmox Debian LXC containers or standard Debian hosts, use this complete, zero-dependency auto-installer. 
+If you are running a Proxmox VE host, you can create a brand new, lightweight, and pre-configured Debian LXC container (without having to manually configure usernames, passwords, or virtualization features) and install the entire application stack automatically with a single command. 
 
-Simply log in to your Debian LXC container terminal as **root** and run:
+Log in to your **Proxmox VE Host shell** as **root** and run:
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/damessner/unifi-health-check/main/proxmox-install.sh)"
+```
+
+### 🔍 What the Proxmox Host Script Does:
+1. **Dynamic Resource Detection**: Automatically scans your Proxmox server for the next available Container ID (VMID), network bridges (like `vmbr0`), and template/container storage volumes.
+2. **Template Provisioning**: Downloads the latest official `debian-12-standard` LXC template if not already cached.
+3. **Container Creation**: Provisions a lightweight, unprivileged Debian 12 container (2 Cores, 2GB RAM, 8GB disk size) with `nesting=1` and `keyctl=1` features pre-enabled (essential for nested Docker containers).
+4. **Passwordless Direct Access**: Sets up the container with no root password (passwordless access) allowing you to connect seamlessly via the host using `pct enter`.
+5. **Container Setup Automation**: Powers on the new container, waits for a DHCP IP lease, and executes the in-container `setup-lxc.sh` auto-installer in a non-interactive pipe.
+
+---
+
+## 📦 In-Container Debian LXC & Docker Auto-Installation
+
+If you already have an existing Debian LXC container or a standard Debian server running and want to install the analyzer manually inside it:
+
+Log in to your **Debian Container terminal** as **root** and run:
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/damessner/unifi-health-check/main/setup-lxc.sh)"
 ```
 
-### 🔍 What the Auto-Installer Does:
+### 🔍 What the In-Container Auto-Installer Does:
 1. **Adaptive Prerequisite Setup**: Detects and installs `curl`, `git`, and standard certificates if they are missing.
 2. **Smart Docker & Compose Checker**: Checks if Docker is already installed.
    - If **absent**: Automatically downloads and configures the official Docker Engine and enables the system daemon.
