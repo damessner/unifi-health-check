@@ -7,7 +7,7 @@ module.exports = {
     username: process.env.UNIFI_USER || '',
     password: process.env.UNIFI_PASS || '',
     site: process.env.UNIFI_SITE || 'default',
-    allowSelfSigned: process.env.UNIFI_ALLOW_SELF_SIGNED === 'true'
+    allowSelfSigned: process.env.UNIFI_ALLOW_SELF_SIGNED !== 'false'
   },
   server: {
     port: parseInt(process.env.PORT, 10) || 3445,

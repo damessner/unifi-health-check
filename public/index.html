@@ -595,14 +595,14 @@
               <span id="ipad-health-gauge-val">0%</span>
             </div>
             <div class="stat-info-text">
-              <h3>Apple Devices Health Score</h3>
+              <h3>Client Devices Health Score</h3>
               <p>Based on experience score, signal level, retries, and band selection.</p>
             </div>
           </div>
           
           <div class="metrics-mini-grid">
             <div class="glass-card mini-card bg-teal-alpha">
-              <h4>Total Apple Devices</h4>
+              <h4>Total School Clients</h4>
               <h3 id="mini-apple-total">0</h3>
             </div>
             <div class="glass-card mini-card bg-warning-alpha">
@@ -620,7 +620,7 @@
         <div class="filter-bar-container glass-card mb-4">
           <div class="search-input-wrapper">
             <i data-lucide="search"></i>
-            <input type="text" id="ipad-search" placeholder="Search pupils iPads by hostname, MAC, IP..." oninput="filterIpads()">
+            <input type="text" id="ipad-search" placeholder="Search clients by hostname, vendor, MAC, IP, AP..." oninput="filterIpads()">
           </div>
           <div class="filter-actions">
             <select id="ipad-filter-status" onchange="filterIpads()">
@@ -630,15 +630,17 @@
               <option value="healthy">Optimal Health Only</option>
             </select>
             <select id="ipad-filter-type" onchange="filterIpads()">
-              <option value="all">All Apple Devices</option>
+              <option value="all">All Network Clients</option>
+              <option value="apple">Apple Devices Only</option>
               <option value="ipad">iPads Only</option>
+              <option value="other">Non-Apple Devices Only</option>
             </select>
           </div>
         </div>
 
         <div class="glass-card">
           <div class="card-header">
-            <h3>Apple Client Diagnostic Roster</h3>
+            <h3>Client Device Diagnostic Roster</h3>
           </div>
           <div class="card-body overflow-x">
             <table class="premium-table">

@@ -74,15 +74,41 @@ else
     log_info "Docker is not installed. Beginning official Docker installation..."
     # Update packages and install prereqs
     apt-get update -y
-    apt-get install -y ca-certificates gnupg git
-    
-    # Run official Docker installation script
-    curl -fsSL https://get.docker.com -o get-docker.sh
-    sh get-docker.sh
-    rm get-docker.sh
-    
+    apt-get install -y ca-certificates curl gnupg git
+
+    # Create keyring directory
+    install -m 0755 -d /etc/apt/keyrings
+    rm -f /etc/apt/keyrings/docker.gpg
+
+    # Detect distro type & codename to fetch the correct packages
+    DISTRO_ID=$(. /etc/os-release && echo "$ID")
+    DISTRO_CODENAME=$(. /etc/os-release && echo "$VERSION_CODENAME")
+    if [ "$DISTRO_ID" != "debian" ] && [ "$DISTRO_ID" != "ubuntu" ]; then
+        DISTRO_ID="debian"
+        DISTRO_CODENAME="bookworm"
+    fi
+
+    # Download Docker official GPG key
+    log_info "Importing official Docker GPG key for ${DISTRO_ID} (${DISTRO_CODENAME})..."
+    curl -fsSL "https://download.docker.com/linux/${DISTRO_ID}/gpg" | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+
+    # Set up official Docker APT repository
+    log_info "Registering official Docker repository..."
+    echo \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${DISTRO_ID} \
+      ${DISTRO_CODENAME} stable" | \
+      tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+    # Install Docker engines & packages
+    log_info "Installing Docker CE engine and components..."
+    apt-get update -y
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
     # Enable and start docker daemon
-    systemctl enable docker
+    log_info "Enabling and starting Docker service..."
+    systemctl daemon-reload || true
+    systemctl enable docker || true
     systemctl start docker || true
 
     # Wait up to 15 seconds for Docker daemon to become ready

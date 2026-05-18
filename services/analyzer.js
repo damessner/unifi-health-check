@@ -2,6 +2,22 @@
  * Diagnostic & Analysis Service for UniFi Network Data
  */
 
+// UniFi Hardware Model Code to friendly name map
+const MODEL_MAPPINGS = {
+  'U7PG2': 'UAP-AC-Pro',
+  'UAP6MP': 'U6-Pro',
+  'U6Lite': 'U6-Lite',
+  'U6LR': 'U6-LR',
+  'U7Pro': 'U7-Pro',
+  'UAP-AC-Pro': 'UAP-AC-Pro',
+  'U6-Pro': 'U6-Pro'
+};
+
+function getFriendlyModelName(model) {
+  if (!model) return 'UAP-AC-Pro';
+  return MODEL_MAPPINGS[model] || model;
+}
+
 class NetworkAnalyzer {
   /**
    * Run RF channel loading and interference diagnostics.
@@ -45,7 +61,7 @@ class NetworkAnalyzer {
             apName: ap.name || ap.mac,
             apMac: ap.mac,
             ip: ap.ip,
-            model: ap.model,
+            model: getFriendlyModelName(ap.model),
             radio: rs.radio,
             band: bandName,
             channel: rs.channel,
@@ -164,9 +180,9 @@ class NetworkAnalyzer {
       }
     });
 
-    const ipadDiagnostics = [];
+    const clientDiagnostics = [];
 
-    // Filter for Apple devices / iPads
+    // Filter for Apple devices / iPads (for stats)
     const appleClients = clients.filter(c => {
       const oui = (c.oui || '').toLowerCase();
       const hostname = (c.hostname || '').toLowerCase();
@@ -176,12 +192,20 @@ class NetworkAnalyzer {
       return oui === 'apple, inc.' || oui.includes('apple') || hostname.includes('ipad') || name.includes('ipad');
     });
 
-    appleClients.forEach(c => {
+    clients.forEach(c => {
+      const oui = (c.oui || '').toLowerCase();
+      const hostname = (c.hostname || '').toLowerCase();
+      const name = (c.name || '').toLowerCase();
+      const isApple = oui === 'apple, inc.' || oui.includes('apple') || hostname.includes('ipad') || name.includes('ipad');
+      const isIpad = (c.hostname || c.name || '').toLowerCase().includes('ipad');
+
       const diag = {
         mac: c.mac,
         ip: c.ip || 'No IP',
-        hostname: c.hostname || c.name || 'Unnamed Apple Device',
-        isIpad: (c.hostname || c.name || '').toLowerCase().includes('ipad'),
+        hostname: c.hostname || c.name || 'Unnamed Device',
+        oui: c.oui || 'Generic Vendor',
+        isApple: isApple,
+        isIpad: isIpad,
         satisfaction: c.satisfaction !== undefined ? c.satisfaction : (c.experience_score || 100),
         signal: c.signal || -100,
         txRateKbps: c.tx_rate || 0,
@@ -241,19 +265,20 @@ class NetworkAnalyzer {
       }
 
       // 6. Formulate specialized actions based on symptoms
+      const deviceWord = isIpad ? 'iPad' : 'client device';
       if (diag.severity === 'critical') {
         if (diag.signal < -80) {
-          diag.recommendation = 'The iPad is too far from the Access Point or blocked by walls. Relocate the client closer to the AP or install an AP in this coverage dead zone.';
+          diag.recommendation = `The ${deviceWord} is too far from the Access Point or blocked by walls. Relocate the client closer to the AP or install an AP in this coverage dead zone.`;
         } else if (diag.txRetriesPct > 40) {
           diag.recommendation = `Severe local RF interference on Channel ${diag.channel}. Change the connected AP (${diag.apName}) channel away from the heavily clogged Channel 6/40/44.`;
         } else {
-          diag.recommendation = 'Poor network negotiation. Try toggling Wi-Fi off and on on the iPad, or renew the DHCP lease. Ensure the AP does not have high CPU load.';
+          diag.recommendation = `Poor network negotiation. Try toggling Wi-Fi off and on on the ${deviceWord}, or renew the DHCP lease. Ensure the AP does not have high CPU load.`;
         }
       } else if (diag.severity === 'warning') {
         if (diag.band === '2.4GHz') {
-          diag.recommendation = 'iPad is stuck on the slow, congested 2.4GHz band. Enable "Band Steering" on the UniFi SSID settings to prefer 5GHz, or set separate 5GHz SSID.';
+          diag.recommendation = `${deviceWord} is stuck on the slow, congested 2.4GHz band. Enable "Band Steering" on the UniFi SSID settings to prefer 5GHz, or set separate 5GHz SSID.`;
         } else if (diag.signal < -72) {
-          diag.recommendation = 'Marginal signal strength. Verify that the pupil is in the same room as the AP, and ensure walls are not blocking the line-of-sight.';
+          diag.recommendation = 'Marginal signal strength. Verify that the user is in the same room as the AP, and ensure walls are not blocking the line-of-sight.';
         } else if (diag.apCongestion > 70) {
           diag.recommendation = `The AP is operating on an extremely congested channel (${diag.channel}). Re-distribute the channel configurations of neighboring APs.`;
         } else {
@@ -263,69 +288,17 @@ class NetworkAnalyzer {
         diag.recommendation = 'Connection is optimal. No action required.';
       }
 
-      ipadDiagnostics.push(diag);
+      clientDiagnostics.push(diag);
     });
 
     // Overall Client Health Score
-    const totalCount = appleClients.length || 1;
-    const criticalCount = ipadDiagnostics.filter(d => d.severity === 'critical').length;
-    const warningCount = ipadDiagnostics.filter(d => d.severity === 'warning').length;
-    const healthyCount = ipadDiagnostics.filter(d => d.severity === 'healthy').length;
+    const totalCount = clientDiagnostics.length || 1;
+    const criticalCount = clientDiagnostics.filter(d => d.severity === 'critical').length;
+    const warningCount = clientDiagnostics.filter(d => d.severity === 'warning').length;
+    const healthyCount = clientDiagnostics.filter(d => d.severity === 'healthy').length;
     const healthIndex = Math.round((healthyCount + warningCount * 0.5) / totalCount * 100);
 
-    // === All-client processing for speed & struggling metrics ===
-    const allClientDiags = clients.map(c => {
-      const diag = {
-        mac: c.mac,
-        ip: c.ip || 'No IP',
-        hostname: c.hostname || c.name || 'Unnamed Client',
-        oui: c.oui || '',
-        isApple: (c.oui || '').toLowerCase().includes('apple'),
-        satisfaction: c.satisfaction !== undefined ? c.satisfaction : (c.experience_score || 100),
-        signal: c.signal || -100,
-        txRateKbps: c.tx_rate || 0,
-        rxRateKbps: c.rx_rate || 0,
-        txRetriesPct: c.wifi_tx_retries_percentage || 0,
-        channel: c.channel || 0,
-        band: c.radio === 'ng' ? '2.4GHz' : '5GHz',
-        apMac: c.ap_mac,
-        apName: apMap[c.ap_mac] || 'Unknown AP',
-        uptime: c.uptime || 0,
-        flags: [],
-        severity: 'healthy'
-      };
-
-      if (diag.signal < -80) {
-        diag.flags.push('Weak Signal');
-        diag.severity = 'critical';
-      } else if (diag.signal < -72) {
-        diag.flags.push('Low Signal');
-        if (diag.severity !== 'critical') diag.severity = 'warning';
-      }
-
-      if (diag.satisfaction < 70) {
-        diag.flags.push('Poor Experience');
-        diag.severity = 'critical';
-      } else if (diag.satisfaction < 85) {
-        diag.flags.push('Degraded Experience');
-        if (diag.severity !== 'critical') diag.severity = 'warning';
-      }
-
-      if (diag.txRetriesPct > 40) {
-        diag.flags.push('High TX Retries');
-        if (diag.severity !== 'critical') diag.severity = 'critical';
-      } else if (diag.txRetriesPct > 20) {
-        diag.flags.push('Elevated TX Retries');
-        if (diag.severity === 'healthy') diag.severity = 'warning';
-      }
-
-      if (diag.band === '2.4GHz') {
-        diag.flags.push('2.4GHz Band');
-        if (diag.severity === 'healthy') diag.severity = 'warning';
-      }
-
-      return diag;
-    });
+    const allClientDiags = clientDiagnostics;
 
     // Aggregate speed metrics (kbps → sum across all clients)
     const totalDownloadKbps = clients.reduce((sum, c) => sum + (c.tx_rate || 0), 0);

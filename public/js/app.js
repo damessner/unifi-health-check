@@ -798,7 +798,7 @@ function renderIpadsTab() {
 
   const clSummary = apiData.clients.summary;
 
-  // 1. Render iPad Health Circular Gauge
+  // 1. Render Client Health Circular Gauge
   const gaugeVal = document.getElementById('ipad-health-gauge-val');
   const gaugeRing = document.getElementById('ipad-health-gauge');
   if (gaugeVal && gaugeRing) {
@@ -812,7 +812,7 @@ function renderIpadsTab() {
   const miniAppleWarning = document.getElementById('mini-apple-warning');
   const miniAppleCritical = document.getElementById('mini-apple-critical');
   
-  if (miniAppleTotal) miniAppleTotal.textContent = clSummary.totalAppleClients;
+  if (miniAppleTotal) miniAppleTotal.textContent = clSummary.totalAllClients;
   if (miniAppleWarning) miniAppleWarning.textContent = clSummary.warningCount;
   if (miniAppleCritical) miniAppleCritical.textContent = clSummary.criticalCount;
 
@@ -838,6 +838,7 @@ function filterIpads() {
     const matchesSearch = c.hostname.toLowerCase().includes(query) || 
                           c.ip.toLowerCase().includes(query) || 
                           c.mac.toLowerCase().includes(query) ||
+                          (c.oui || '').toLowerCase().includes(query) ||
                           c.apName.toLowerCase().includes(query);
     
     // Status Filter
@@ -850,6 +851,10 @@ function filterIpads() {
     let matchesType = true;
     if (typeFilter === 'ipad') {
       matchesType = c.isIpad;
+    } else if (typeFilter === 'apple') {
+      matchesType = c.isApple;
+    } else if (typeFilter === 'other') {
+      matchesType = !c.isApple;
     }
 
     return matchesSearch && matchesStatus && matchesType;
@@ -860,7 +865,7 @@ function filterIpads() {
     
     // Render symptom tags
     const symptomTags = c.flags.map(f => {
-      const cls = (f.includes('Critical') || f.includes('Poor')) ? 'danger' : 'warning';
+      const cls = (f.includes('Critical') || f.includes('Poor') || f.includes('Weak')) ? 'danger' : 'warning';
       return `<span class="symptom-tag ${cls}">${f}</span>`;
     }).join('');
 
@@ -870,15 +875,25 @@ function filterIpads() {
     const uptimeStr = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
 
     const experienceColor = getHealthColor(c.satisfaction);
-    const signalColor = c.signal < -80 ? 'var(--color-danger)' : (c.signal < -70 ? 'var(--color-warning)' : 'var(--color-success)');
+    const signalColor = c.signal < -80 ? 'var(--color-danger)' : (c.signal < -72 ? 'var(--color-warning)' : 'var(--color-success)');
+
+    let iconName = 'wifi';
+    if (c.isIpad) {
+      iconName = 'tablet';
+    } else if (c.isApple) {
+      iconName = 'smartphone';
+    }
 
     tr.innerHTML = `
       <td>
         <div style="font-weight:700; color:white; display:flex; align-items:center; gap:8px;">
-          <i data-lucide="${c.isIpad ? 'tablet' : 'laptop'}" style="width:16px; height:16px; color:var(--text-muted);"></i>
+          <i data-lucide="${iconName}" style="width:16px; height:16px; color:var(--text-muted);" title="${escapeHtml(c.oui)}"></i>
           <span>${escapeHtml(c.hostname)}</span>
         </div>
-        <span style="font-size:0.72rem; color:var(--text-dark); display:block; margin-top:2px;">Uptime: ${uptimeStr}</span>
+        <div style="font-size:0.72rem; color:var(--text-dark); display:flex; flex-direction:column; margin-top:2px; gap:1px;">
+          <span>Vendor: ${escapeHtml(c.oui)}</span>
+          <span>Uptime: ${uptimeStr}</span>
+        </div>
       </td>
       <td>
         <span style="display:block; font-weight:550; font-size:0.82rem;">${c.ip}</span>
@@ -916,13 +931,13 @@ function filterIpads() {
     tableBody.innerHTML = `
       <tr>
         <td colspan="9" style="text-align:center; padding:40px; color:var(--text-dark);">
-          <i data-lucide="tablet" style="width:32px; height:32px; margin-bottom:12px; display:inline-block;"></i>
-          <p>No Apple clients match your active filters.</p>
+          <i data-lucide="wifi" style="width:32px; height:32px; margin-bottom:12px; display:inline-block;"></i>
+          <p>No client devices match your active filters.</p>
         </td>
       </tr>
     `;
-    if (window.lucide) window.lucide.createIcons();
   }
+  if (window.lucide) window.lucide.createIcons();
 }
 
 /**
