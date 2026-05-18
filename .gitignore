@@ -31,3 +31,7 @@ Desktop.ini
 
 # Local script utility
 delete-repos.ps1
+
+# Generated reports (live data snapshots - never commit)
+unifi_optimization_report.xlsx
+*.report.xlsx
