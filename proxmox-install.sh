@@ -164,14 +164,14 @@ fi
 
 # 8. Deploy dependencies and application inside LXC
 log_info "Executing Docker & Application Auto-Installer inside the container..."
-log_info "This will automate the setup of Docker, Docker-compose, pull the code, and launch on port 3843."
+log_info "This will automate the setup of Docker, Docker-compose, pull the code, and launch on port 2943."
 
 # Execute the LXC setup script inside the container using pct exec
 # We pipe curl output to bash to execute it directly inside
 pct exec "$NEXT_VMID" -- bash -c "curl -fsSL https://raw.githubusercontent.com/damessner/unifi-health-check/main/setup-lxc.sh | DEBIAN_FRONTEND=noninteractive bash"
 
-# Retrieve external port configured (default 3843)
-PORT_CONFIGURED="3843"
+# Retrieve external port configured (default 2943)
+PORT_CONFIGURED="2943"
 
 # Clear host screen for final report
 clear
