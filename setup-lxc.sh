@@ -158,10 +158,10 @@ else
     echo -e "\n${BOLD}${MAGENTA}--- Configuration Wizard ---${NC}"
     echo -e "Press [Enter] to keep the default values.\n"
     
-    prompt_var "UniFi Controller Host/IP" "172.16.0.200" "CONF_HOST"
+    prompt_var "UniFi Controller Host/IP" "unifi-controller.local" "CONF_HOST"
     prompt_var "UniFi Controller Port   " "8443" "CONF_PORT"
     prompt_var "UniFi Username          " "observer" "CONF_USER"
-    prompt_var "UniFi Password          " '3^K@nP:!$@Hc;,P' "CONF_PASS"
+    prompt_var "UniFi Password          " "" "CONF_PASS"
     prompt_var "UniFi Site Name         " "default" "CONF_SITE"
     prompt_var "Dashboard External Port " "2943" "CONF_HOST_PORT"
     
@@ -178,6 +178,8 @@ UNIFI_SITE=$CONF_SITE
 PORT=3445
 CACHE_EXPIRY_SEC=15
 HOST_PORT=$CONF_HOST_PORT
+API_TOKEN=
+UNIFI_ALLOW_SELF_SIGNED=false
 EOF
     
     log_success "Environment config (.env) successfully generated!"

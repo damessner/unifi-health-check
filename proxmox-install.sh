@@ -124,6 +124,8 @@ fi
 # 6. Create the LXC Container
 log_info "Creating a lightweight unprivileged Debian 12 LXC container..."
 log_info "Container Configuration: Cores=2, RAM=2GB, Storage=8GB, Nesting=enabled, Keyctl=enabled"
+GENERATED_ROOT_PASS="$(tr -dc 'A-Za-z0-9!@#%^_+=' </dev/urandom | head -c 24)"
+CREDENTIALS_FILE="/root/unifi-health-check-${NEXT_VMID}.credentials"
 
 pct create "$NEXT_VMID" "${STORAGE_TEMPLATES}:vztmpl/${TEMPLATE_FILE}" \
     -cores 2 \
@@ -132,11 +134,16 @@ pct create "$NEXT_VMID" "${STORAGE_TEMPLATES}:vztmpl/${TEMPLATE_FILE}" \
     -features "nesting=1,keyctl=1" \
     -storage "$STORAGE_ROOTFS" \
     -hostname "unifi-health-check" \
-    -password "" \
+    -password "$GENERATED_ROOT_PASS" \
     -onboot 1 \
     -unprivileged 1
 
 log_success "LXC Container ${BOLD}${NEXT_VMID}${NC} created successfully!"
+cat > "$CREDENTIALS_FILE" <<EOF
+LXC_ID=${NEXT_VMID}
+ROOT_PASSWORD=${GENERATED_ROOT_PASS}
+EOF
+chmod 600 "$CREDENTIALS_FILE"
 
 # 7. Start the container and wait for IP
 log_info "Starting LXC container..."
@@ -180,7 +187,7 @@ echo "================================================================="
 echo "   🎉 Proxmox LXC & UniFi Analyzer Successfully Deployed! 🎉"
 echo "================================================================="
 echo -e "${NC}"
-echo -e "A lightweight, secure, and passwordless Debian LXC container has been"
+echo -e "A lightweight and secure Debian LXC container has been"
 echo -e "provisioned and configured with nested Docker virtualization."
 echo ""
 echo -e "Container Details:"
@@ -188,13 +195,14 @@ echo -e "  - ${BOLD}LXC ID:${NC}        ${CYAN}${NEXT_VMID}${NC}"
 echo -e "  - ${BOLD}Hostname:${NC}      unifi-health-check"
 echo -e "  - ${BOLD}Status:${NC}        ${GREEN}Running${NC}"
 echo -e "  - ${BOLD}IP Address:${NC}    ${CYAN}${CONTAINER_IP}${NC}"
+echo -e "  - ${BOLD}Credentials:${NC}  ${CYAN}${CREDENTIALS_FILE}${NC} (chmod 600)"
 echo ""
 echo -e "Access the UniFi Health Check Dashboard:"
 echo -e "  👉  ${BOLD}${CYAN}http://${CONTAINER_IP}:${PORT_CONFIGURED}${NC}"
 echo ""
 echo -e "-----------------------------------------------------------------"
 echo -e "${BOLD}Management commands on Proxmox host:${NC}"
-echo -e "  - Enter container shell (passwordless): ${CYAN}pct enter ${NEXT_VMID}${NC}"
+echo -e "  - Enter container shell:               ${CYAN}pct enter ${NEXT_VMID}${NC}"
 echo -e "  - Stop container:                      ${CYAN}pct stop ${NEXT_VMID}${NC}"
 echo -e "  - Start container:                     ${CYAN}pct start ${NEXT_VMID}${NC}"
 echo -e "  - Reboot container:                    ${CYAN}pct reboot ${NEXT_VMID}${NC}"

@@ -57,6 +57,7 @@ const CLIENT_SATISFACTION_CRITICAL_THRESHOLD = 70;
 const CLIENT_SATISFACTION_WARNING_THRESHOLD = 85;
 const MAX_CASCADE_LOG_ENTRIES = 12;
 const MAX_CLIENT_CASCADE_LOG_ENTRIES = 8;
+const MAX_MODELED_ENDPOINTS = 60;
 
 
 // DOMContentLoaded Initialization
@@ -287,6 +288,9 @@ async function fetchData(isSilent = false, force = false) {
     if (!payload.success) throw new Error(payload.error || 'Server returned negative status');
 
     rawApiData = payload;
+    if (Array.isArray(rawApiData.aps)) {
+      rawApiData.aps = rawApiData.aps.slice(0, MAX_MODELED_ENDPOINTS);
+    }
     console.log('[API Fetch] Successfully fetched fresh telemetry!', rawApiData);
 
     const nowTs = Date.now();
@@ -503,7 +507,7 @@ function renderOverview() {
       const card = document.createElement('div');
       card.className = `alert-item-card ${ipad.severity}`;
       
-      const symptoms = ipad.flags.join(', ');
+      const symptoms = escapeHtml(ipad.flags.join(', '));
       
       card.innerHTML = `
         <div class="alert-icon ${ipad.severity === 'critical' ? 'text-critical' : 'text-warning'}">
@@ -723,7 +727,7 @@ function filterAPs() {
     }
 
     // Apply Floor filters
-    // AP names follow school conventions, e.g. "EG-Flur", "1OG-Klasse12", "2OG-Physik"
+    // Floor inference is heuristic and name-based when explicit metadata is unavailable
     let matchesFloor = true;
     if (floorFilter !== 'all') {
       const name = ap.name.toUpperCase();
@@ -1127,8 +1131,8 @@ function showErrorNotification(msg) {
       <div class="alert-icon text-critical"><i data-lucide="shield-alert"></i></div>
       <div class="alert-text critical">
         <h4>Telemetry Sync Interrupted</h4>
-        <p>We are currently unable to retrieve raw statistics from the local UniFi Controller (Host: 172.16.0.200:8443). The local express server is serving stale cached data or reported: <code>${msg}</code>.</p>
-        <p style="margin-top:6px;"><strong>Troubleshooting:</strong> Check that the UniFi hardware controller is powered on, reachable on the school intranet network, and that the credentials configured in the environment file are correct.</p>
+        <p>We are currently unable to retrieve raw statistics from the configured UniFi Controller. The local express server is serving stale cached data or reported: <code>${escapeHtml(msg)}</code>.</p>
+        <p style="margin-top:6px;"><strong>Troubleshooting:</strong> Check that the UniFi hardware controller is powered on, reachable on your network, and that the credentials configured in the environment file are correct.</p>
       </div>
     `;
     alertsContainer.prepend(errCard);
@@ -1253,6 +1257,7 @@ function renderOptimalGrid() {
   });
 
   const apArray = Object.values(apList).sort((a, b) => a.name.localeCompare(b.name));
+  const proximityModel = buildDynamicProximityGraph(apiData.aps || apArray);
 
   const ch24Options = [1, 6, 11];
   const ch5Options = [36, 44, 52, 60, 100, 108, 116, 124, 132, 140];
@@ -1272,7 +1277,7 @@ function renderOptimalGrid() {
   const apOverlapsMap = {};
   apArray.forEach(ap => {
     apOverlapsMap[ap.mac] = { ng: 0, na: 0 };
-    const config = AP_PROXIMITY_NEIGHBORS[ap.mac];
+    const config = proximityModel[ap.mac];
     if (!config) return;
 
     config.neighbors.forEach(neighborMac => {
@@ -1282,13 +1287,13 @@ function renderOptimalGrid() {
       if (ap.radios.ng && neighborAP.radios.ng) {
         const ch1 = ap.radios.ng.channel;
         const ch2 = neighborAP.radios.ng.channel;
-        if (ch1 && ch2 && Math.abs(ch1 - ch2) <= 4) apOverlapsMap[ap.mac].ng++;
+        if (channelsOverlap24(ch1, ch2)) apOverlapsMap[ap.mac].ng++;
       }
 
       if (ap.radios.na && neighborAP.radios.na) {
         const ch1 = ap.radios.na.channel;
         const ch2 = neighborAP.radios.na.channel;
-        if (ch1 && ch2 && ch1 === ch2) apOverlapsMap[ap.mac].na++;
+        if (channelsOverlap5(ch1, ap.radios.na?.bw, ch2, neighborAP.radios.na?.bw)) apOverlapsMap[ap.mac].na++;
       }
     });
   });
@@ -1342,7 +1347,7 @@ function renderOptimalGrid() {
     }
     totalAudits++;
 
-    const proximityConfig = AP_PROXIMITY_NEIGHBORS[ap.mac];
+    const proximityConfig = proximityModel[ap.mac];
     let neighborsCell = '<span class="text-dark">No physical neighbors mapped</span>';
     if (proximityConfig && proximityConfig.neighbors.length > 0) {
       const neighborItems = proximityConfig.neighbors.map(mac => {
@@ -1352,11 +1357,11 @@ function renderOptimalGrid() {
         const bandDetails = [];
 
         if (r24 && neighborAP.radios.ng && r24.channel && neighborAP.radios.ng.channel) {
-          const isConflict = Math.abs(r24.channel - neighborAP.radios.ng.channel) <= 4;
+          const isConflict = channelsOverlap24(r24.channel, neighborAP.radios.ng.channel);
           bandDetails.push(`2.4G: <span class="${isConflict ? 'conflict-neighbor-text' : ''}">Ch ${neighborAP.radios.ng.channel}</span>`);
         }
         if (r5 && neighborAP.radios.na && r5.channel && neighborAP.radios.na.channel) {
-          const isConflict = r5.channel === neighborAP.radios.na.channel;
+          const isConflict = channelsOverlap5(r5.channel, r5.bw, neighborAP.radios.na.channel, neighborAP.radios.na.bw);
           bandDetails.push(`5G: <span class="${isConflict ? 'conflict-neighbor-text' : ''}">Ch ${neighborAP.radios.na.channel}</span>`);
         }
 
@@ -1432,10 +1437,10 @@ function renderOptimalGrid() {
             const rawNeighbor = rawApiData.aps.find(a => a.mac === neighborMac);
             if (!rawNeighbor) return;
             if (rawAP.radios?.ng && rawNeighbor.radios?.ng && rawAP.radios.ng.channel && rawNeighbor.radios.ng.channel) {
-              if (Math.abs(rawAP.radios.ng.channel - rawNeighbor.radios.ng.channel) <= 4) rawNgOverlaps++;
+              if (channelsOverlap24(rawAP.radios.ng.channel, rawNeighbor.radios.ng.channel)) rawNgOverlaps++;
             }
             if (rawAP.radios?.na && rawNeighbor.radios?.na && rawAP.radios.na.channel && rawNeighbor.radios.na.channel) {
-              if (rawAP.radios.na.channel === rawNeighbor.radios.na.channel) rawNaOverlaps++;
+              if (channelsOverlap5(rawAP.radios.na.channel, rawAP.radios.na.bw, rawNeighbor.radios.na.channel, rawNeighbor.radios.na.bw)) rawNaOverlaps++;
             }
           });
           resolvedCount = (rawNgOverlaps + rawNaOverlaps) - totalOverlaps;
@@ -2285,61 +2290,66 @@ function setAutoRefresh(seconds) {
 // ============================================================
 
 /**
- * 3D Physical Adjacency and Structural Overlap mapping database for Mittelschule Telfs.
- * Models EG (Ground Floor), 1OG (First Floor) and 2OG (Second Floor) physical adjacency grids.
+ * Build a dynamic AP proximity model from live AP telemetry.
+ * The model is generated per refresh and capped to MAX_MODELED_ENDPOINTS endpoints.
  */
-const AP_PROXIMITY_NEIGHBORS = {
-  'fc:ec:da:11:55:88': {
-    name: 'AP-EG-Lehrerzimmer',
-    floor: 'eg',
-    neighbors: [
-      'fc:ec:da:11:22:33', // Horizontal: Lehrerzimmer <-> 1a
-      'fc:ec:da:22:33:55'  // Diagonal: Lehrerzimmer <-> 2a
-    ]
-  },
-  'fc:ec:da:11:22:33': {
-    name: 'AP-EG-Klasse-1a',
-    floor: 'eg',
-    neighbors: [
-      'fc:ec:da:11:55:88', // Horizontal: 1a <-> Lehrerzimmer
-      'fc:ec:da:11:22:44', // Horizontal: 1a <-> 1b
-      'fc:ec:da:22:33:55'  // Vertical: 1a <-> 2a
-    ]
-  },
-  'fc:ec:da:11:22:44': {
-    name: 'AP-EG-Klasse-1b',
-    floor: 'eg',
-    neighbors: [
-      'fc:ec:da:11:22:33', // Horizontal: 1b <-> 1a
-      'fc:ec:da:22:33:66'  // Vertical: 1b <-> 2b
-    ]
-  },
-  'fc:ec:da:22:33:55': {
-    name: 'AP-1G-Klasse-2a',
-    floor: '1og',
-    neighbors: [
-      'fc:ec:da:22:33:66', // Horizontal: 2a <-> 2b
-      'fc:ec:da:11:22:33', // Vertical: 2a <-> 1a
-      'fc:ec:da:33:44:77', // Vertical: 2a <-> Physikraum
-      'fc:ec:da:11:55:88'  // Diagonal: 2a <-> Lehrerzimmer
-    ]
-  },
-  'fc:ec:da:22:33:66': {
-    name: 'AP-1G-Klasse-2b',
-    floor: '1og',
-    neighbors: [
-      'fc:ec:da:22:33:55', // Horizontal: 2b <-> 2a
-      'fc:ec:da:11:22:44'  // Vertical: 2b <-> 1b
-    ]
-  },
-  'fc:ec:da:33:44:77': {
-    name: 'AP-2G-Physikraum',
-    floor: '2og',
-    neighbors: [
-      'fc:ec:da:22:33:55'  // Vertical: Physikraum <-> 2a
-    ]
-  }
-};
+function inferFloorFromName(name = '', index = 0) {
+  const n = String(name).toUpperCase();
+  if (n.includes('EG') || n.includes('GROUND')) return 'eg';
+  if (n.includes('1OG') || n.includes('1.OG') || n.includes('FIRST')) return '1og';
+  if (n.includes('2OG') || n.includes('2.OG') || n.includes('SECOND')) return '2og';
+  return ['eg', '1og', '2og'][index % 3];
+}
+
+function channelsOverlap24(ch1, ch2) {
+  return Number.isFinite(ch1) && Number.isFinite(ch2) && Math.abs(ch1 - ch2) < 5;
+}
+
+function channelsOverlap5(ch1, bw1, ch2, bw2) {
+  if (!Number.isFinite(ch1) || !Number.isFinite(ch2)) return false;
+  const halfSpan1 = (Number(bw1) || 20) / 10;
+  const halfSpan2 = (Number(bw2) || 20) / 10;
+  return Math.abs(ch1 - ch2) <= (halfSpan1 + halfSpan2);
+}
+
+function buildDynamicProximityGraph(aps = []) {
+  const nodes = Array.isArray(aps) ? aps.slice(0, MAX_MODELED_ENDPOINTS) : [];
+  const graph = {};
+
+  nodes.forEach((ap, i) => {
+    graph[ap.mac] = {
+      name: ap.name,
+      floor: inferFloorFromName(ap.name, i),
+      neighbors: []
+    };
+  });
+
+  nodes.forEach((ap1) => {
+    const scores = [];
+    nodes.forEach((ap2) => {
+      if (!ap1 || !ap2 || ap1.mac === ap2.mac) return;
+      let score = 0;
+      const ng1 = ap1.radios?.ng;
+      const ng2 = ap2.radios?.ng;
+      const na1 = ap1.radios?.na;
+      const na2 = ap2.radios?.na;
+
+      if (channelsOverlap24(ng1?.channel, ng2?.channel)) score += 3;
+      if (channelsOverlap5(na1?.channel, na1?.bw, na2?.channel, na2?.bw)) score += 4;
+      if (ng1?.cu_total && ng2?.cu_total) score += Math.max(0, 2 - Math.abs(ng1.cu_total - ng2.cu_total) / 50);
+      if (na1?.cu_total && na2?.cu_total) score += Math.max(0, 2 - Math.abs(na1.cu_total - na2.cu_total) / 50);
+
+      if (score > 0) scores.push({ mac: ap2.mac, score });
+    });
+
+    scores
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 4)
+      .forEach((entry) => graph[ap1.mac].neighbors.push(entry.mac));
+  });
+
+  return graph;
+}
 
 /**
  * Recursive physical RF cascade and co-channel propagation engine.
@@ -2360,6 +2370,7 @@ function runRFPropagationEngine() {
   apArray.forEach(ap => {
     apMap[ap.mac] = ap;
   });
+  const proximityModel = buildDynamicProximityGraph(apArray);
 
   const radioByApBand = {};
   channelsRadios.forEach(radio => {
@@ -2404,8 +2415,8 @@ function runRFPropagationEngine() {
 
   // 3) Apply mutual neighbor contention penalties
   const checkedPairs = new Set();
-  Object.keys(AP_PROXIMITY_NEIGHBORS).forEach(apMac1 => {
-    const config1 = AP_PROXIMITY_NEIGHBORS[apMac1];
+  Object.keys(proximityModel).forEach(apMac1 => {
+    const config1 = proximityModel[apMac1];
     const ap1 = apMap[apMac1];
     if (!ap1) return;
 
@@ -2424,9 +2435,9 @@ function runRFPropagationEngine() {
 
         let overlaps = false;
         if (band === 'ng') {
-          overlaps = Math.abs(r1.channel - r2.channel) <= 4;
+          overlaps = channelsOverlap24(r1.channel, r2.channel);
         } else {
-          overlaps = r1.channel === r2.channel;
+          overlaps = channelsOverlap5(r1.channel, r1.bw, r2.channel, r2.bw);
         }
         if (!overlaps) return;
 
@@ -2745,10 +2756,11 @@ function renderProximityMap() {
   apiData.aps.forEach(ap => {
     apMap[ap.mac] = ap;
   });
+  const proximityModel = buildDynamicProximityGraph(apiData.aps);
   
   apiData.aps.forEach(ap => {
-    const config = AP_PROXIMITY_NEIGHBORS[ap.mac];
-    if (!config) return; // Only render APs registered at Mittelschule Telfs
+    const config = proximityModel[ap.mac];
+    if (!config) return;
     
     const floorEl = floors[config.floor];
     if (!floorEl) return;
@@ -2775,10 +2787,10 @@ function renderProximityMap() {
         const selAp = apMap[selectedAPMac];
         if (selAp) {
           if (ap.radios.ng && selAp.radios.ng) {
-            isNgConflict = Math.abs(ap.radios.ng.channel - selAp.radios.ng.channel) <= 4;
+            isNgConflict = channelsOverlap24(ap.radios.ng.channel, selAp.radios.ng.channel);
           }
           if (ap.radios.na && selAp.radios.na) {
-            isNaConflict = ap.radios.na.channel === selAp.radios.na.channel;
+            isNaConflict = channelsOverlap5(ap.radios.na.channel, ap.radios.na.bw, selAp.radios.na.channel, selAp.radios.na.bw);
           }
         }
         cardClass = (isNgConflict || isNaConflict) ? 'conflict' : 'neighbor';
@@ -2788,12 +2800,12 @@ function renderProximityMap() {
         const neighAp = apMap[neighMac];
         if (neighAp) {
           if (ap.radios.ng && neighAp.radios.ng) {
-            if (Math.abs(ap.radios.ng.channel - neighAp.radios.ng.channel) <= 4) {
+            if (channelsOverlap24(ap.radios.ng.channel, neighAp.radios.ng.channel)) {
               isNgConflict = true;
             }
           }
           if (ap.radios.na && neighAp.radios.na) {
-            if (ap.radios.na.channel === neighAp.radios.na.channel) {
+            if (channelsOverlap5(ap.radios.na.channel, ap.radios.na.bw, neighAp.radios.na.channel, neighAp.radios.na.bw)) {
               isNaConflict = true;
             }
           }

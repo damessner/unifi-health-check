@@ -10,7 +10,7 @@ A modern, high-fidelity real-time network health diagnostics and channel analysi
 
 ## 🚀 One-Click Proxmox VE Host Installation
 
-If you are running a Proxmox VE host, you can create a brand new, lightweight, and pre-configured Debian LXC container (without having to manually configure usernames, passwords, or virtualization features) and install the entire application stack automatically with a single command. 
+If you are running a Proxmox VE host, you can create a brand new, lightweight, and pre-configured Debian LXC container and install the entire application stack automatically with a single command.
 
 Log in to your **Proxmox VE Host shell** as **root** and run:
 
@@ -22,7 +22,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/damessner/unifi-health-c
 1. **Dynamic Resource Detection**: Automatically scans your Proxmox server for the next available Container ID (VMID), network bridges (like `vmbr0`), and template/container storage volumes.
 2. **Template Provisioning**: Downloads the latest official `debian-12-standard` LXC template if not already cached.
 3. **Container Creation**: Provisions a lightweight, unprivileged Debian 12 container (2 Cores, 2GB RAM, 8GB disk size) with `nesting=1` and `keyctl=1` features pre-enabled (essential for nested Docker containers).
-4. **Passwordless Direct Access**: Sets up the container with no root password (passwordless access) allowing you to connect seamlessly via the host using `pct enter`.
+4. **Direct Access from Host**: Container shell access is available via `pct enter` from the Proxmox host.
 5. **Container Setup Automation**: Powers on the new container, waits for a DHCP IP lease, and executes the in-container `setup-lxc.sh` auto-installer in a non-interactive pipe.
 
 ---
@@ -81,14 +81,16 @@ The application is configured using a `.env` file located in the root of the pro
 
 | Variable | Default Value | Description |
 |---|---|---|
-| `UNIFI_HOST` | `172.16.0.200` | Hostname or IP address of your UniFi Controller. |
+| `UNIFI_HOST` | `unifi-controller.local` | Hostname or IP address of your UniFi Controller. |
 | `UNIFI_PORT` | `8443` | The controller API Port (typically `8443` or `443`). |
-| `UNIFI_USER` | `observer` | Username for the UniFi account. |
-| `UNIFI_PASS` | `3^K@nP:!$@Hc;,P` | Password for the UniFi account (supports special characters). |
+| `UNIFI_USER` | **Required** | Username for the UniFi account (read-only recommended). |
+| `UNIFI_PASS` | **Required** | Password for the UniFi account. |
 | `UNIFI_SITE` | `default` | UniFi Site Name/ID (typically `default`). |
 | `PORT` | `3445` | Internal Node.js server port (do not modify). |
 | `HOST_PORT` | `2943` | External port exposed on the host machine to access the UI. |
 | `CACHE_EXPIRY_SEC` | `15` | Caching duration (in seconds) of controller data to limit load. |
+| `API_TOKEN` | _(empty)_ | Optional API protection token; when set, send it in `x-api-token` header for all `/api/*` calls. |
+| `UNIFI_ALLOW_SELF_SIGNED` | `false` | Keep `false` for production; only set `true` if you intentionally trust a self-signed controller certificate. |
 
 ---
 
@@ -121,6 +123,17 @@ The internal Node.js server exposes these diagnostic endpoints:
 - **`GET /api/health`**: Tests connection status to the UniFi controller and verifies credentials.
 - **`GET /api/diagnostics`**: Compiles AP radio congestion, active clients, and Apple device metrics. Use `?force=true` to bypass cache.
 - **`GET /api/history`**: Returns the ring-buffered timeline trends (up to 60 snapshot samples).
+
+If `API_TOKEN` is configured, include `x-api-token: <token>` for all `/api/*` requests.
+
+---
+
+## 🌍 Public Release Notes
+
+- No real controller credentials are shipped in defaults.
+- Sandbox topology is generated dynamically from live AP telemetry (no hardcoded room/device map).
+- Sandbox model caps visualization/simulation to the first 60 AP endpoints per fetch.
+- For public exposure, run behind TLS and reverse-proxy auth in addition to `API_TOKEN`.
 
 ---
 
