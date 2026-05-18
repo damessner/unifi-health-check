@@ -50,6 +50,7 @@ const CACHE_AGE_THRESHOLD_SECONDS = 2;
 const SANDBOX_OVERRIDE_NOTICE_DELAY_MS = 800;
 const MIN_BASELINE_RADIO_LOAD = 12;
 const NEIGHBOR_CONTENTION_PENALTY_PCT = 18;
+const MAX_HISTORY_SAMPLES = 240;
 const CLIENT_SATISFACTION_CU_WEIGHT = 0.7;
 const CLIENT_SATISFACTION_RETRY_WEIGHT = 0.5;
 const MIN_CLIENT_SATISFACTION = 10;
@@ -58,6 +59,8 @@ const CLIENT_SATISFACTION_WARNING_THRESHOLD = 85;
 const MAX_CASCADE_LOG_ENTRIES = 12;
 const MAX_CLIENT_CASCADE_LOG_ENTRIES = 8;
 const MAX_MODELED_ENDPOINTS = 60;
+const OPTIMAL_CHANNELS_24 = [1, 6, 11];
+const OPTIMAL_CHANNELS_5 = [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144];
 
 
 // DOMContentLoaded Initialization
@@ -1276,6 +1279,243 @@ function getMinRssiHtml(ap) {
   `;
 }
 
+function getOptimizationChannelOptions(radio) {
+  return radio === 'ng' ? OPTIMAL_CHANNELS_24 : OPTIMAL_CHANNELS_5;
+}
+
+function formatChannelValue(channel) {
+  return Number.isFinite(channel) ? String(channel) : 'Off';
+}
+
+function formatBandRecommendation(plan) {
+  if (!plan) return 'Disabled';
+  return plan.shouldDisable ? 'Off' : `Ch ${plan.recommendedChannel}`;
+}
+
+function formatBandActionLabel(plan) {
+  if (!plan) return 'Radio unavailable';
+  if (plan.shouldDisable) return 'Disable radio';
+  if (plan.currentChannel === plan.recommendedChannel) return 'Keep current channel';
+  return `Move to Ch ${plan.recommendedChannel}`;
+}
+
+function formatBandImpactLabel(plan) {
+  if (!plan) return 'No modeled impact';
+  if (plan.overlapReduction > 0) {
+    return `-${plan.overlapReduction} overlap${plan.overlapReduction === 1 ? '' : 's'}`;
+  }
+  if (plan.projectedOverlaps === 0) {
+    return 'Conflict-free';
+  }
+  return 'Monitor';
+}
+
+function calculateApOverlaps(apArray, apList, proximityModel) {
+  const overlapsMap = {};
+
+  apArray.forEach((ap) => {
+    overlapsMap[ap.mac] = { ng: 0, na: 0 };
+    const config = proximityModel[ap.mac];
+    if (!config) return;
+
+    config.neighbors.forEach((neighborMac) => {
+      const neighborAP = apList[neighborMac];
+      if (!neighborAP) return;
+
+      if (ap.radios.ng && neighborAP.radios.ng) {
+        const ch1 = ap.radios.ng.channel;
+        const ch2 = neighborAP.radios.ng.channel;
+        if (channelsOverlap24(ch1, ch2)) overlapsMap[ap.mac].ng++;
+      }
+
+      if (ap.radios.na && neighborAP.radios.na) {
+        const ch1 = ap.radios.na.channel;
+        const ch2 = neighborAP.radios.na.channel;
+        if (channelsOverlap5(ch1, ap.radios.na?.bw, ch2, neighborAP.radios.na?.bw)) overlapsMap[ap.mac].na++;
+      }
+    });
+  });
+
+  return overlapsMap;
+}
+
+function evaluateBandCandidate(ap, band, candidateChannel, proximityModel, apList, currentOverlaps) {
+  const radio = ap.radios?.[band];
+  if (!radio) return null;
+
+  const is24 = band === 'ng';
+  const overlapFn = is24 ? channelsOverlap24 : channelsOverlap5;
+  const channelUsageMap = is24
+    ? (apiData?.channels?.summary?.channelCounts24 || {})
+    : (apiData?.channels?.summary?.channelCounts5 || {});
+  const clientsOnBand = Number(radio.num_sta) || 0;
+  const currentLoad = Number(radio.cu_total) || 0;
+  const currentChannel = Number.isFinite(radio.channel) ? radio.channel : null;
+  const neighbors = proximityModel[ap.mac]?.neighbors || [];
+
+  let projectedOverlaps = 0;
+  let projectedPenalty = 0;
+  neighbors.forEach((neighborMac) => {
+    const neighborRadio = apList[neighborMac]?.radios?.[band];
+    if (!neighborRadio || !candidateChannel || !neighborRadio.channel) return;
+
+    const overlaps = is24
+      ? overlapFn(candidateChannel, neighborRadio.channel)
+      : overlapFn(candidateChannel, radio.bw, neighborRadio.channel, neighborRadio.bw);
+
+    if (!overlaps) return;
+    projectedOverlaps++;
+    projectedPenalty += 80 + (Number(neighborRadio.cu_total) || 0) * 1.5 + (Number(neighborRadio.num_sta) || 0) * 8;
+  });
+
+  const reusePenalty = candidateChannel
+    ? ((channelUsageMap[String(candidateChannel)] || 0) - (currentChannel === candidateChannel ? 1 : 0)) * 10
+    : 0;
+
+  let score = projectedPenalty + reusePenalty + currentLoad * 0.35 + clientsOnBand * 18;
+  if (candidateChannel === currentChannel) {
+    score -= 12;
+  }
+
+  if (!candidateChannel) {
+    score += 120 + clientsOnBand * 45 + currentLoad * 1.5;
+    score -= currentOverlaps * 90;
+    if (is24 && clientsOnBand === 0) score -= 40;
+    if (is24 && currentLoad <= 25) score -= 15;
+  }
+
+  const overlapReduction = Math.max(0, currentOverlaps - projectedOverlaps);
+  const estimatedLoad = Math.max(
+    MIN_BASELINE_RADIO_LOAD,
+    Math.round(currentLoad - overlapReduction * (NEIGHBOR_CONTENTION_PENALTY_PCT / 2) + projectedOverlaps * 4)
+  );
+
+  return {
+    candidateChannel,
+    currentChannel,
+    currentOverlaps,
+    projectedOverlaps,
+    overlapReduction,
+    score,
+    clientsOnBand,
+    currentLoad,
+    estimatedLoad,
+    shouldDisable: !candidateChannel
+  };
+}
+
+function buildBandRecommendation(ap, band, proximityModel, apList, currentOverlapsMap) {
+  const radio = ap.radios?.[band];
+  if (!radio) return null;
+
+  const currentOverlaps = currentOverlapsMap?.[ap.mac]?.[band] || 0;
+  const currentLoad = Number(radio.cu_total) || 0;
+  const clientsOnBand = Number(radio.num_sta) || 0;
+  const candidates = getOptimizationChannelOptions(band).map((channel) =>
+    evaluateBandCandidate(ap, band, channel, proximityModel, apList, currentOverlaps)
+  );
+
+  const disableEligible = currentOverlaps >= 2
+    && clientsOnBand <= (band === 'ng' ? 3 : 1)
+    && currentLoad <= (band === 'ng' ? 45 : 30);
+
+  if (disableEligible) {
+    candidates.push(evaluateBandCandidate(ap, band, null, proximityModel, apList, currentOverlaps));
+  }
+
+  const viableCandidates = candidates.filter(Boolean);
+  viableCandidates.sort((a, b) => {
+    if (a.score !== b.score) return a.score - b.score;
+    if (a.overlapReduction !== b.overlapReduction) return b.overlapReduction - a.overlapReduction;
+    return (a.estimatedLoad || 0) - (b.estimatedLoad || 0);
+  });
+
+  const best = viableCandidates[0];
+  if (!best) return null;
+
+  return {
+    ...best,
+    recommendedChannel: best.candidateChannel,
+    actionLabel: formatBandActionLabel({
+      shouldDisable: best.shouldDisable,
+      currentChannel: best.currentChannel,
+      recommendedChannel: best.candidateChannel
+    }),
+    impactLabel: formatBandImpactLabel(best)
+  };
+}
+
+function buildOptimizationPlan() {
+  if (!apiData?.channels?.radios) return [];
+
+  const apList = {};
+  apiData.channels.radios.forEach((radio) => {
+    if (!apList[radio.apMac]) {
+      apList[radio.apMac] = {
+        mac: radio.apMac,
+        name: radio.apName,
+        model: radio.model,
+        radios: {}
+      };
+    }
+    apList[radio.apMac].radios[radio.radio] = radio;
+  });
+
+  const apArray = Object.values(apList).sort((a, b) => a.name.localeCompare(b.name));
+  const proximityModel = buildDynamicProximityGraph(apiData.aps || apArray);
+  const currentOverlapsMap = calculateApOverlaps(apArray, apList, proximityModel);
+
+  return apArray.map((ap, index) => {
+    const r24 = ap.radios.ng;
+    const r5 = ap.radios.na;
+    const floor = inferFloorFromName(ap.name, index).toUpperCase();
+    const currentMinRssi = r24 && r24.min_rssi_enabled ? r24.min_rssi : (r5 && r5.min_rssi_enabled ? r5.min_rssi : null);
+    const plan24 = buildBandRecommendation(ap, 'ng', proximityModel, apList, currentOverlapsMap);
+    const plan5 = buildBandRecommendation(ap, 'na', proximityModel, apList, currentOverlapsMap);
+    const totalCurrentOverlaps = (plan24?.currentOverlaps || 0) + (plan5?.currentOverlaps || 0);
+    const totalProjectedOverlaps = (plan24?.projectedOverlaps || 0) + (plan5?.projectedOverlaps || 0);
+    const totalOverlapReduction = Math.max(0, totalCurrentOverlaps - totalProjectedOverlaps);
+    const totalClients = (plan24?.clientsOnBand || 0) + (plan5?.clientsOnBand || 0);
+    const maxLoad = Math.max(Number(r24?.cu_total) || 0, Number(r5?.cu_total) || 0);
+
+    const isCh24Drift = Boolean(plan24) && (plan24.shouldDisable || plan24.currentChannel !== plan24.recommendedChannel);
+    const isCh5Drift = Boolean(plan5) && (plan5.shouldDisable || plan5.currentChannel !== plan5.recommendedChannel);
+    const isPower24Drift = r24 && (r24.tx_power_mode === 'auto' || (r24.tx_power !== null && r24.tx_power > 10));
+    const isPower5Drift = r5 && (r5.tx_power_mode === 'auto' || (r5.tx_power !== null && r5.tx_power > 16));
+    const isMinRssiDrift = !currentMinRssi || currentMinRssi !== -75;
+    const hasDrift = isCh24Drift || isCh5Drift || isPower24Drift || isPower5Drift || isMinRssiDrift;
+
+    const neighbors = (proximityModel[ap.mac]?.neighbors || []).map((neighborMac) => ({
+      mac: neighborMac,
+      ap: apList[neighborMac]
+    })).filter((entry) => entry.ap);
+
+    return {
+      ...ap,
+      floor,
+      r24,
+      r5,
+      currentMinRssi,
+      recommended24: plan24,
+      recommended5: plan5,
+      isCh24Drift,
+      isCh5Drift,
+      isPower24Drift,
+      isPower5Drift,
+      isMinRssiDrift,
+      hasDrift,
+      totalCurrentOverlaps,
+      totalProjectedOverlaps,
+      totalOverlapReduction,
+      totalClients,
+      maxLoad,
+      proximityConfig: proximityModel[ap.mac],
+      neighbors,
+      impactScore: (hasDrift ? 1000000 : 0) + totalOverlapReduction * 6000 + totalCurrentOverlaps * 1000 + totalClients * 50 + maxLoad
+    };
+  }).sort((a, b) => b.impactScore - a.impactScore);
+}
+
 /**
  * Compile and render the comparative optimal network channel plan grid layout
  */
@@ -1285,28 +1525,10 @@ function renderOptimalGrid() {
   if (!tableBody || !apiData) return;
 
   tableBody.innerHTML = '';
-
-  const apList = {};
-  apiData.channels.radios.forEach(r => {
-    if (!apList[r.apMac]) {
-      apList[r.apMac] = {
-        mac: r.apMac,
-        name: r.apName,
-        model: r.model,
-        radios: {}
-      };
-    }
-    apList[r.apMac].radios[r.radio] = r;
-  });
-
-  const apArray = Object.values(apList).sort((a, b) => a.name.localeCompare(b.name));
-  const proximityModel = buildDynamicProximityGraph(apiData.aps || apArray);
-
-  const ch24Options = [1, 6, 11];
-  const ch5Options = [36, 44, 52, 60, 100, 108, 116, 124, 132, 140];
+  const optimizationPlan = buildOptimizationPlan();
 
   let driftCount = 0;
-  let totalAudits = 0;
+  const totalAudits = optimizationPlan.length;
 
   // Retrieve checked MACs from localStorage for persistent state rendering
   let checkedMacs = [];
@@ -1316,117 +1538,17 @@ function renderOptimalGrid() {
   } catch (e) {
     console.error('Error fetching checked MACs:', e);
   }
-
-  const apOverlapsMap = {};
-  apArray.forEach(ap => {
-    apOverlapsMap[ap.mac] = { ng: 0, na: 0 };
-    const config = proximityModel[ap.mac];
-    if (!config) return;
-
-    config.neighbors.forEach(neighborMac => {
-      const neighborAP = apList[neighborMac];
-      if (!neighborAP) return;
-
-      if (ap.radios.ng && neighborAP.radios.ng) {
-        const ch1 = ap.radios.ng.channel;
-        const ch2 = neighborAP.radios.ng.channel;
-        if (channelsOverlap24(ch1, ch2)) apOverlapsMap[ap.mac].ng++;
-      }
-
-      if (ap.radios.na && neighborAP.radios.na) {
-        const ch1 = ap.radios.na.channel;
-        const ch2 = neighborAP.radios.na.channel;
-        if (channelsOverlap5(ch1, ap.radios.na?.bw, ch2, neighborAP.radios.na?.bw)) apOverlapsMap[ap.mac].na++;
-      }
-    });
-  });
-
-  // Pre-calculate all values to sort by Pareto Impact Score (20-80 Rule)
-  apArray.forEach((ap, index) => {
-    let floor = 'EG';
-    let floorOffset = 0;
-    const name = ap.name.toUpperCase();
-    if (name.includes('EG') || name.startsWith('E-') || name.includes('ERDGESCHOSS')) {
-      floor = 'EG';
-      floorOffset = 0;
-    } else if (name.includes('1OG') || name.includes('1.OG') || name.includes('FIRST')) {
-      floor = '1OG';
-      floorOffset = 3;
-    } else if (name.includes('2OG') || name.includes('2.OG') || name.includes('SECOND')) {
-      floor = '2OG';
-      floorOffset = 6;
-    } else {
-      floor = 'Other';
-      floorOffset = 9;
-    }
-
-    const optCh24 = ch24Options[(index + Math.floor(floorOffset / 3)) % ch24Options.length];
-    const optCh5 = ch5Options[(index + floorOffset) % ch5Options.length];
-
-    const r24 = ap.radios.ng;
-    const r5 = ap.radios.na;
-
-    const curCh24 = r24 ? r24.channel : null;
-    const curPower24 = r24 ? r24.tx_power : null;
-    const curCh5 = r5 ? r5.channel : null;
-    const curPower5 = r5 ? r5.tx_power : null;
-    const curMinRssi = r24 && r24.min_rssi_enabled ? r24.min_rssi : (r5 && r5.min_rssi_enabled ? r5.min_rssi : null);
-
-    const isCh24Drift = r24 && curCh24 !== optCh24;
-    const isCh5Drift = r5 && curCh5 !== optCh5;
-    const isPower24Drift = r24 && (r24.tx_power_mode === 'auto' || (curPower24 !== null && curPower24 > 10));
-    const isPower5Drift = r5 && (r5.tx_power_mode === 'auto' || (curPower5 !== null && curPower5 > 16));
-    const isMinRssiDrift = !curMinRssi || curMinRssi !== -75;
-
-    const hasDrift = isCh24Drift || isCh5Drift || isPower24Drift || isPower5Drift || isMinRssiDrift;
-
-    const activeOverlaps = apOverlapsMap[ap.mac];
-    const totalOverlaps = (activeOverlaps?.ng || 0) + (activeOverlaps?.na || 0);
-    const clientsCount = (r24?.num_sta || 0) + (r5?.num_sta || 0);
-    const maxLoad = Math.max(r24?.cu_total || 0, r5?.cu_total || 0);
-
-    ap.floor = floor;
-    ap.optCh24 = optCh24;
-    ap.optCh5 = optCh5;
-    ap.curCh24 = curCh24;
-    ap.curPower24 = curPower24;
-    ap.curCh5 = curCh5;
-    ap.curPower5 = curPower5;
-    ap.curMinRssi = curMinRssi;
-    ap.isCh24Drift = isCh24Drift;
-    ap.isCh5Drift = isCh5Drift;
-    ap.isPower24Drift = isPower24Drift;
-    ap.isPower5Drift = isPower5Drift;
-    ap.isMinRssiDrift = isMinRssiDrift;
-    ap.hasDrift = hasDrift;
-    ap.totalOverlaps = totalOverlaps;
-    ap.clientsCount = clientsCount;
-    ap.maxLoad = maxLoad;
-
-    // Pareto Score: Drifted APs have priority. Sorted by Overlaps (x1000) + Clients (x50) + Max Load (x1)
-    ap.impactScore = (hasDrift ? 1000000 : 0) + (totalOverlaps * 1000) + (clientsCount * 50) + maxLoad;
-  });
-
-  // Sort by impactScore descending to bring high-impact congested AP drift resolutions to the top!
-  apArray.sort((a, b) => b.impactScore - a.impactScore);
-
-  apArray.forEach((ap) => {
-    const floor = ap.floor;
-    const optCh24 = ap.optCh24;
-    const optCh5 = ap.optCh5;
-
+  optimizationPlan.forEach((ap) => {
     const optPower24 = 9;
     const optPower5 = 15;
     const optMinRssi = -75;
 
-    const r24 = ap.radios.ng;
-    const r5 = ap.radios.na;
-
-    const curCh24 = ap.curCh24;
-    const curPower24 = ap.curPower24;
-    const curCh5 = ap.curCh5;
-    const curPower5 = ap.curPower5;
-    const curMinRssi = ap.curMinRssi;
+    const { floor, r24, r5 } = ap;
+    const curCh24 = ap.recommended24?.currentChannel ?? null;
+    const curPower24 = r24 ? r24.tx_power : null;
+    const curCh5 = ap.recommended5?.currentChannel ?? null;
+    const curPower5 = r5 ? r5.tx_power : null;
+    const curMinRssi = ap.currentMinRssi;
 
     const isCh24Drift = ap.isCh24Drift;
     const isCh5Drift = ap.isCh5Drift;
@@ -1439,13 +1561,10 @@ function renderOptimalGrid() {
     if (hasDrift) {
       driftCount++;
     }
-    totalAudits++;
-
-    const proximityConfig = proximityModel[ap.mac];
+    const proximityConfig = ap.proximityConfig;
     let neighborsCell = '<span class="text-dark">No physical neighbors mapped</span>';
     if (proximityConfig && proximityConfig.neighbors.length > 0) {
-      const neighborItems = proximityConfig.neighbors.map(mac => {
-        const neighborAP = apList[mac];
+      const neighborItems = ap.neighbors.map(({ ap: neighborAP }) => {
         if (!neighborAP) return '';
         const nameClean = neighborAP.name.replace('AP-', '');
         const bandDetails = [];
@@ -1471,38 +1590,38 @@ function renderOptimalGrid() {
     let cell24Ch, cell5Ch;
     
     if (sandboxModeEnabled) {
-      const ch24SelectOptions = [1, 6, 11].map(ch => 
-        `<option value="${ch}" ${curCh24 === ch ? 'selected' : ''}>Ch ${ch}</option>`
+      const ch24SelectOptions = [...OPTIMAL_CHANNELS_24, 'off'].map(ch =>
+        `<option value="${ch}" ${String(curCh24 ?? 'off') === String(ch) ? 'selected' : ''}>${ch === 'off' ? 'Off' : `Ch ${ch}`}</option>`
       ).join('');
       
-      const ch5SelectOptions = [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144].map(ch => 
-        `<option value="${ch}" ${curCh5 === ch ? 'selected' : ''}>Ch ${ch}</option>`
+      const ch5SelectOptions = [...OPTIMAL_CHANNELS_5, 'off'].map(ch =>
+        `<option value="${ch}" ${String(curCh5 ?? 'off') === String(ch) ? 'selected' : ''}>${ch === 'off' ? 'Off' : `Ch ${ch}`}</option>`
       ).join('');
       
       cell24Ch = r24
         ? `<div style="display:flex; align-items:center; gap:6px;">
              <select class="sandbox-dropdown ${isCh24Drift ? 'changed' : ''}" onchange="changeSandboxChannel('${ap.mac}', 'ng', this.value)">
-               ${ch24SelectOptions}
-             </select>
-             <span>➔ <strong>${optCh24}</strong></span>
-           </div>`
+                ${ch24SelectOptions}
+              </select>
+              <span>➔ <strong>${formatBandRecommendation(ap.recommended24)}</strong></span>
+            </div>`
         : '<span class="text-muted">Disabled</span>';
         
       cell5Ch = r5
         ? `<div style="display:flex; align-items:center; gap:6px;">
              <select class="sandbox-dropdown ${isCh5Drift ? 'changed' : ''}" onchange="changeSandboxChannel('${ap.mac}', 'na', this.value)">
-               ${ch5SelectOptions}
-             </select>
-             <span>➔ <strong>${optCh5}</strong></span>
-           </div>`
+                ${ch5SelectOptions}
+              </select>
+              <span>➔ <strong>${formatBandRecommendation(ap.recommended5)}</strong></span>
+            </div>`
         : '<span class="text-muted">Disabled</span>';
     } else {
       cell24Ch = r24 
-        ? `<span class="${isCh24Drift ? 'text-drift' : ''}">${curCh24} ➔ <strong>${optCh24}</strong></span>`
+        ? `<span class="${isCh24Drift ? 'text-drift' : ''}">${formatChannelValue(curCh24)} ➔ <strong>${formatBandRecommendation(ap.recommended24)}</strong></span>`
         : '<span class="text-muted">Disabled</span>';
         
       cell5Ch = r5
-        ? `<span class="${isCh5Drift ? 'text-drift' : ''}">${curCh5} ➔ <strong>${optCh5}</strong></span>`
+        ? `<span class="${isCh5Drift ? 'text-drift' : ''}">${formatChannelValue(curCh5)} ➔ <strong>${formatBandRecommendation(ap.recommended5)}</strong></span>`
         : '<span class="text-muted">Disabled</span>';
     }
 
@@ -1518,35 +1637,12 @@ function renderOptimalGrid() {
 
     let impactCell = '<span class="text-dark">Not simulated</span>';
     if (proximityConfig) {
-      const activeOverlaps = apOverlapsMap[ap.mac];
-      const totalOverlaps = (activeOverlaps?.ng || 0) + (activeOverlaps?.na || 0);
-
-      let resolvedCount = 0;
-      if (sandboxModeEnabled && rawApiData && Array.isArray(rawApiData.aps)) {
-        const rawAP = rawApiData.aps.find(a => a.mac === ap.mac);
-        if (rawAP) {
-          let rawNgOverlaps = 0;
-          let rawNaOverlaps = 0;
-          proximityConfig.neighbors.forEach(neighborMac => {
-            const rawNeighbor = rawApiData.aps.find(a => a.mac === neighborMac);
-            if (!rawNeighbor) return;
-            if (rawAP.radios?.ng && rawNeighbor.radios?.ng && rawAP.radios.ng.channel && rawNeighbor.radios.ng.channel) {
-              if (channelsOverlap24(rawAP.radios.ng.channel, rawNeighbor.radios.ng.channel)) rawNgOverlaps++;
-            }
-            if (rawAP.radios?.na && rawNeighbor.radios?.na && rawAP.radios.na.channel && rawNeighbor.radios.na.channel) {
-              if (channelsOverlap5(rawAP.radios.na.channel, rawAP.radios.na.bw, rawNeighbor.radios.na.channel, rawNeighbor.radios.na.bw)) rawNaOverlaps++;
-            }
-          });
-          resolvedCount = (rawNgOverlaps + rawNaOverlaps) - totalOverlaps;
-        }
-      }
-
-      if (resolvedCount > 0) {
-        impactCell = `<span class="badge-impact-cleared"><i data-lucide="sparkles" style="width:12px;height:12px;display:inline-block;vertical-align:middle;margin-right:4px;"></i>✨ Cleared ${resolvedCount} Conflicts!</span>`;
-      } else if (totalOverlaps === 0) {
+      if (ap.totalCurrentOverlaps === 0) {
         impactCell = `<span class="badge-impact-low"><i data-lucide="check" style="width:12px;height:12px;display:inline-block;vertical-align:middle;margin-right:4px;"></i>⚡ Low Impact (0 overlaps)</span>`;
+      } else if (ap.totalOverlapReduction > 0) {
+        impactCell = `<span class="badge-impact-cleared"><i data-lucide="sparkles" style="width:12px;height:12px;display:inline-block;vertical-align:middle;margin-right:4px;"></i>✨ Blueprint clears ${ap.totalOverlapReduction} overlap${ap.totalOverlapReduction === 1 ? '' : 's'}</span>`;
       } else {
-        impactCell = `<span class="badge-impact-high"><i data-lucide="alert-octagon" style="width:12px;height:12px;display:inline-block;vertical-align:middle;margin-right:4px;"></i>⚠️ ${totalOverlaps} overlap${totalOverlaps > 1 ? 's' : ''} caused!</span>`;
+        impactCell = `<span class="badge-impact-high"><i data-lucide="alert-octagon" style="width:12px;height:12px;display:inline-block;vertical-align:middle;margin-right:4px;"></i>⚠️ ${ap.totalCurrentOverlaps} overlap${ap.totalCurrentOverlaps > 1 ? 's' : ''} caused!</span>`;
       }
     }
 
@@ -1581,7 +1677,7 @@ function renderOptimalGrid() {
   });
 
   if (driftLabel) {
-    const driftPct = Math.round((driftCount / totalAudits) * 100);
+    const driftPct = totalAudits > 0 ? Math.round((driftCount / totalAudits) * 100) : 0;
     driftLabel.textContent = `${driftCount} APs drifted (${driftPct}% configuration drift)`;
     driftLabel.className = driftCount > 0 ? 'count-badge bg-red-alpha' : 'count-badge bg-teal-alpha';
     if (driftCount > 0) {
@@ -2075,6 +2171,178 @@ function exportClientsCSV() {
   URL.revokeObjectURL(url);
 }
 
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportXlsx() {
+  exportOptimizationXlsx();
+}
+
+async function exportOptimizationXlsx() {
+  if (!apiData || !apiData.channels || !apiData.clients) {
+    alert('No optimization data available to export. Please fetch data first.');
+    return;
+  }
+
+  if (!window.XLSX) {
+    showToast('The XLSX export library did not load. Please retry in a few seconds.', 'error');
+    return;
+  }
+
+  const optimizationPlan = buildOptimizationPlan();
+  let historySamples = [];
+
+  try {
+    const historyResponse = await fetch(`/api/history?limit=${MAX_HISTORY_SAMPLES}`);
+    if (historyResponse.ok) {
+      const historyPayload = await historyResponse.json();
+      historySamples = Array.isArray(historyPayload.samples) ? historyPayload.samples : [];
+    }
+  } catch (err) {
+    console.warn('[XLSX Export] History sheet unavailable:', err);
+  }
+
+  const workbook = window.XLSX.utils.book_new();
+  const generatedAt = new Date();
+
+  const summaryRows = [
+    ['Metric', 'Value'],
+    ['Generated At', generatedAt.toLocaleString('de-AT')],
+    ['Total APs', apiData.channels.summary.totalAPs || 0],
+    ['Active 2.4GHz Radios', apiData.channels.summary.totalRadios24 || 0],
+    ['Active 5GHz Radios', apiData.channels.summary.totalRadios5 || 0],
+    ['Average 2.4GHz Utilization', `${apiData.channels.summary.avgUtil24 || 0}%`],
+    ['Average 5GHz Utilization', `${apiData.channels.summary.avgUtil5 || 0}%`],
+    ['Congested Radios', apiData.channels.summary.congestedRadiosCount || 0],
+    ['Warning Radios', apiData.channels.summary.warningRadiosCount || 0],
+    ['Total Clients', apiData.clients.summary.totalAllClients || 0],
+    ['Critical Clients', apiData.clients.summary.criticalCount || 0],
+    ['Warning Clients', apiData.clients.summary.warningCount || 0],
+    ['Health Index', `${apiData.clients.summary.healthIndex || 0}%`]
+  ];
+
+  const planRows = [
+    [
+      'AP Name',
+      'Floor',
+      'Model',
+      'Current 2.4GHz',
+      'Suggested 2.4GHz',
+      '2.4GHz Action',
+      'Current 5GHz',
+      'Suggested 5GHz',
+      '5GHz Action',
+      'Current 2.4GHz Power',
+      'Current 5GHz Power',
+      'Current Min RSSI',
+      'Butterfly Current Overlaps',
+      'Butterfly Projected Overlaps',
+      'Butterfly Improvement',
+      '2.4GHz Impact',
+      '5GHz Impact',
+      'Estimated Clients on AP',
+      'Peak Load %',
+      'Nearest RF Neighbors'
+    ],
+    ...optimizationPlan.map((ap) => [
+      ap.name,
+      ap.floor,
+      ap.model,
+      formatChannelValue(ap.recommended24?.currentChannel ?? null),
+      formatBandRecommendation(ap.recommended24),
+      ap.recommended24?.actionLabel || 'Disabled',
+      formatChannelValue(ap.recommended5?.currentChannel ?? null),
+      formatBandRecommendation(ap.recommended5),
+      ap.recommended5?.actionLabel || 'Disabled',
+      ap.r24 ? (ap.r24.tx_power_mode === 'auto' ? 'Auto' : `${ap.r24.tx_power} dBm`) : 'Disabled',
+      ap.r5 ? (ap.r5.tx_power_mode === 'auto' ? 'Auto' : `${ap.r5.tx_power} dBm`) : 'Disabled',
+      ap.currentMinRssi ? `${ap.currentMinRssi} dBm` : 'Disabled',
+      ap.totalCurrentOverlaps,
+      ap.totalProjectedOverlaps,
+      ap.totalOverlapReduction,
+      ap.recommended24?.impactLabel || 'N/A',
+      ap.recommended5?.impactLabel || 'N/A',
+      ap.totalClients,
+      ap.maxLoad,
+      ap.neighbors.map(({ ap: neighbor }) => neighbor?.name).filter(Boolean).join(', ')
+    ])
+  ];
+
+  const clientRows = [
+    ['Hostname', 'MAC', 'IP', 'AP Name', 'Band', 'Channel', 'Signal (dBm)', 'Satisfaction', 'TX Retry %', 'Severity', 'Flags', 'Recommendation'],
+    ...apiData.clients.allClients.map((client) => [
+      client.hostname,
+      client.mac,
+      client.ip,
+      client.apName,
+      client.band,
+      client.channel,
+      client.signal,
+      client.satisfaction,
+      client.txRetriesPct,
+      client.severity,
+      (client.flags || []).join('; '),
+      client.recommendation || ''
+    ])
+  ];
+
+  const historyRows = [
+    ['Timestamp', 'All Clients', 'Apple Clients', 'Avg Util 2.4GHz', 'Avg Util 5GHz', 'Download Mbps', 'Upload Mbps', 'Critical Clients', 'Warning Clients', 'Congested Radios'],
+    ...historySamples.map((sample) => [
+      new Date(sample.timestamp).toLocaleString('de-AT'),
+      sample.totalAllClients,
+      sample.totalAppleClients,
+      sample.avgUtil24,
+      sample.avgUtil5,
+      sample.totalDownloadMbps,
+      sample.totalUploadMbps,
+      sample.criticalCount,
+      sample.warningCount,
+      sample.congestedRadiosCount
+    ])
+  ];
+
+  const summarySheet = window.XLSX.utils.aoa_to_sheet(summaryRows);
+  const planSheet = window.XLSX.utils.aoa_to_sheet(planRows);
+  const clientsSheet = window.XLSX.utils.aoa_to_sheet(clientRows);
+  const historySheet = window.XLSX.utils.aoa_to_sheet(historyRows);
+
+  summarySheet['!cols'] = [{ wch: 28 }, { wch: 18 }];
+  planSheet['!cols'] = [
+    { wch: 28 }, { wch: 10 }, { wch: 14 }, { wch: 14 }, { wch: 16 }, { wch: 18 },
+    { wch: 14 }, { wch: 16 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 16 },
+    { wch: 14 }, { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 12 },
+    { wch: 10 }, { wch: 40 }
+  ];
+  clientsSheet['!cols'] = [
+    { wch: 24 }, { wch: 20 }, { wch: 16 }, { wch: 24 }, { wch: 10 }, { wch: 10 },
+    { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 36 }, { wch: 48 }
+  ];
+  historySheet['!cols'] = [
+    { wch: 22 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 14 },
+    { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 14 }
+  ];
+
+  window.XLSX.utils.book_append_sheet(workbook, summarySheet, 'Summary');
+  window.XLSX.utils.book_append_sheet(workbook, planSheet, 'Optimization Plan');
+  window.XLSX.utils.book_append_sheet(workbook, clientsSheet, 'Client Issues');
+  window.XLSX.utils.book_append_sheet(workbook, historySheet, 'History');
+
+  const data = window.XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+  downloadBlob(
+    new Blob([data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }),
+    `unifi-optimization-${generatedAt.toISOString().slice(0, 19).replace(/:/g, '-')}.xlsx`
+  );
+
+  showToast('Optimization workbook exported as XLSX.', 'success');
+}
+
 // ============================================================
 //  HISTORY & TRENDS TAB
 // ============================================================
@@ -2089,7 +2357,7 @@ let chartSpeeds = null;
  */
 async function fetchAndRenderHistory() {
   try {
-    const res = await fetch('/api/history');
+    const res = await fetch(`/api/history?limit=${MAX_HISTORY_SAMPLES}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (data.success && data.samples) {
@@ -2306,7 +2574,7 @@ function renderHistoryTab(samples) {
  * Notify user.
  */
 function clearHistory() {
-  if (confirm('Clear the displayed history charts? (Server-side buffer persists until server restart.)')) {
+  if (confirm('Clear the displayed history charts? (Persisted SQLite samples remain stored on the server.)')) {
     // Destroy existing charts so they re-initialize empty
     if (chartUtilization) { chartUtilization.destroy(); chartUtilization = null; }
     if (chartClients) { chartClients.destroy(); chartClients = null; }
@@ -2571,6 +2839,19 @@ function runRFPropagationEngine() {
     const radio = parentAp.radios?.[band];
     if (!radio) return;
 
+    if (!radio.channel) {
+      client.channel = 'Off';
+      client.apCongestion = 0;
+      client.satisfaction = MIN_CLIENT_SATISFACTION;
+      client.severity = 'critical';
+      client.warning = 'Radio disabled in sandbox';
+      if (!Array.isArray(client.flags)) client.flags = [];
+      if (!client.flags.includes('Radio disabled in sandbox')) {
+        client.flags.push('Radio disabled in sandbox');
+      }
+      return;
+    }
+
     client.channel = radio.channel;
     client.apCongestion = radio.cu_total;
 
@@ -2647,11 +2928,15 @@ function runRFPropagationEngine() {
     if (r.radio === 'ng') {
       sumLoad24 += r.cu_total;
       count24++;
-      channelCounts24[String(r.channel)] = (channelCounts24[String(r.channel)] || 0) + 1;
+      if (r.channel) {
+        channelCounts24[String(r.channel)] = (channelCounts24[String(r.channel)] || 0) + 1;
+      }
     } else if (r.radio === 'na') {
       sumLoad5 += r.cu_total;
       count5++;
-      channelCounts5[String(r.channel)] = (channelCounts5[String(r.channel)] || 0) + 1;
+      if (r.channel) {
+        channelCounts5[String(r.channel)] = (channelCounts5[String(r.channel)] || 0) + 1;
+      }
     }
 
     if (r.cu_total > RADIO_CRITICAL_CU_THRESHOLD || r.cci_count > RADIO_CRITICAL_CCI_THRESHOLD) {
@@ -2729,7 +3014,12 @@ function runRFPropagationEngine() {
  * Handle channel selection changes in sandbox mode
  */
 function changeSandboxChannel(apMac, radio, value) {
-  const numericValue = parseInt(value, 10);
+  const numericValue = value === 'off' ? null : parseInt(value, 10);
+  if (value !== 'off' && Number.isNaN(numericValue)) {
+    showToast('Invalid sandbox channel value ignored.', 'error');
+    return;
+  }
+
   if (!sandboxOverrides[apMac]) {
     sandboxOverrides[apMac] = {};
   }
@@ -2737,7 +3027,7 @@ function changeSandboxChannel(apMac, radio, value) {
   
   localStorage.setItem('unifi_sandbox_overrides', JSON.stringify(sandboxOverrides));
   
-  console.log(`[Sandbox Override] Set AP ${apMac} radio ${radio} to channel ${numericValue}`);
+  console.log(`[Sandbox Override] Set AP ${apMac} radio ${radio} to channel ${numericValue === null ? 'Off' : numericValue}`);
   
   // Re-run propagation and update all tabs
   runRFPropagationEngine();

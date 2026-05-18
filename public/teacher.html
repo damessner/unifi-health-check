@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Teacher Wi-Fi Status | UniFi Diagnostics</title>
+  <meta name="description" content="Simplified classroom Wi-Fi status and incident reporting portal for teachers.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/lucide@0.468.0"></script>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body class="teacher-page">
+  <main class="teacher-shell">
+    <section class="teacher-hero glass-card">
+      <div>
+        <p class="teacher-eyebrow">Teacher Portal</p>
+        <h1>Classroom Wi-Fi Status</h1>
+        <p id="teacher-headline" class="text-muted">Checking the current wireless readiness for lessons...</p>
+      </div>
+      <div class="teacher-hero-actions">
+        <button class="btn-refresh" onclick="loadTeacherPortal()">
+          <i data-lucide="refresh-cw"></i>
+          <span>Refresh</span>
+        </button>
+        <a class="btn-export teacher-link-btn" href="/">
+          <i data-lucide="layout-dashboard"></i>
+          <span>Open Admin Dashboard</span>
+        </a>
+      </div>
+    </section>
+
+    <section class="teacher-status-grid">
+      <div class="metric-card teacher-status-card">
+        <div class="metric-header">
+          <span class="metric-title">Overall Readiness</span>
+          <div class="metric-icon bg-blue-alpha"><i data-lucide="wifi"></i></div>
+        </div>
+        <div class="metric-body">
+          <h3 id="teacher-overall-status" class="metric-value">--</h3>
+          <p id="teacher-last-updated" class="metric-sub">Waiting for first update</p>
+        </div>
+      </div>
+      <div class="metric-card teacher-status-card">
+        <div class="metric-header">
+          <span class="metric-title">Readiness Score</span>
+          <div class="metric-icon bg-teal-alpha"><i data-lucide="graduation-cap"></i></div>
+        </div>
+        <div class="metric-body">
+          <h3 id="teacher-readiness-score" class="metric-value">0%</h3>
+          <p class="metric-sub">Higher is better for live lessons</p>
+        </div>
+      </div>
+      <div class="metric-card teacher-status-card">
+        <div class="metric-header">
+          <span class="metric-title">Recent Reports</span>
+          <div class="metric-icon bg-purple-alpha"><i data-lucide="messages-square"></i></div>
+        </div>
+        <div class="metric-body">
+          <h3 id="teacher-report-count" class="metric-value">0</h3>
+          <p class="metric-sub">Recent teacher-submitted Wi-Fi incidents</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="teacher-content-grid">
+      <div class="glass-card">
+        <div class="card-header">
+          <div class="header-icon bg-warning-alpha"><i data-lucide="map-pinned"></i></div>
+          <h3>Room Readiness</h3>
+        </div>
+        <div class="card-body">
+          <p class="text-muted teacher-card-copy">Areas are grouped by access point name so teachers can quickly see whether their classroom is affected.</p>
+          <div id="teacher-room-status" class="teacher-room-list"></div>
+        </div>
+      </div>
+
+      <div class="glass-card">
+        <div class="card-header">
+          <div class="header-icon bg-rose-alpha"><i data-lucide="move-right"></i></div>
+          <h3>Roaming / Sticky Device Watchlist</h3>
+        </div>
+        <div class="card-body">
+          <p class="text-muted teacher-card-copy">These devices are the most likely to feel “stuck” on a weak or distant connection right now.</p>
+          <div id="teacher-sticky-clients" class="teacher-list-stack"></div>
+        </div>
+      </div>
+
+      <div class="glass-card">
+        <div class="card-header">
+          <div class="header-icon bg-blue-alpha"><i data-lucide="message-square-plus"></i></div>
+          <h3>Report a Classroom Issue</h3>
+        </div>
+        <div class="card-body">
+          <form id="teacher-report-form" class="teacher-report-form">
+            <label>
+              <span>Your Name (optional)</span>
+              <input type="text" name="reporterName" maxlength="80" placeholder="Mrs. Example">
+            </label>
+            <label>
+              <span>Room / Location</span>
+              <input type="text" name="location" maxlength="120" placeholder="Classroom 1A" required>
+            </label>
+            <label>
+              <span>Issue Type</span>
+              <select name="issueType" required>
+                <option value="">Select an issue…</option>
+                <option value="Slow Wi-Fi">Slow Wi-Fi</option>
+                <option value="Connection drops">Connection drops</option>
+                <option value="Cannot join">Cannot join</option>
+                <option value="Video call lag">Video call lag</option>
+                <option value="Other">Other</option>
+              </select>
+            </label>
+            <label>
+              <span>What happened?</span>
+              <textarea name="message" maxlength="500" rows="4" placeholder="Describe the lesson impact or what students experienced." required></textarea>
+            </label>
+            <button type="submit" class="btn-refresh">
+              <i data-lucide="send"></i>
+              <span>Send Report</span>
+            </button>
+          </form>
+          <p id="teacher-report-feedback" class="teacher-inline-feedback text-muted"></p>
+        </div>
+      </div>
+
+      <div class="glass-card">
+        <div class="card-header">
+          <div class="header-icon bg-purple-alpha"><i data-lucide="history"></i></div>
+          <h3>Recent Teacher Reports</h3>
+        </div>
+        <div class="card-body">
+          <div id="teacher-recent-reports" class="teacher-list-stack"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="js/teacher.js"></script>
+</body>
+</html>
