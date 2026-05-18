@@ -53,6 +53,10 @@ class HistoryStore {
   }
 
   run(sql, params = []) {
+    if (!this.db) {
+      return Promise.reject(new Error('HistoryStore database is not initialized'));
+    }
+
     return new Promise((resolve, reject) => {
       this.db.run(sql, params, function (err) {
         if (err) {
@@ -65,6 +69,10 @@ class HistoryStore {
   }
 
   get(sql, params = []) {
+    if (!this.db) {
+      return Promise.reject(new Error('HistoryStore database is not initialized'));
+    }
+
     return new Promise((resolve, reject) => {
       this.db.get(sql, params, (err, row) => {
         if (err) {
@@ -77,6 +85,10 @@ class HistoryStore {
   }
 
   all(sql, params = []) {
+    if (!this.db) {
+      return Promise.reject(new Error('HistoryStore database is not initialized'));
+    }
+
     return new Promise((resolve, reject) => {
       this.db.all(sql, params, (err, rows) => {
         if (err) {

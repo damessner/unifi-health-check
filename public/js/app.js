@@ -3011,6 +3011,11 @@ function runRFPropagationEngine() {
  */
 function changeSandboxChannel(apMac, radio, value) {
   const numericValue = value === 'off' ? null : parseInt(value, 10);
+  if (value !== 'off' && !Number.isFinite(numericValue)) {
+    showToast('Invalid sandbox channel value ignored.', 'error');
+    return;
+  }
+
   if (!sandboxOverrides[apMac]) {
     sandboxOverrides[apMac] = {};
   }
