@@ -10,9 +10,9 @@ services:
     ports:
       # Exposes the service on a unique and configurable host port.
       # By default, it maps to port 2943 on the host, preventing conflicts.
-      - "${HOST_PORT:-2943}:${PORT:-3445}"
+      - "${HOST_PORT:-2943}:3445"
     env_file:
       - .env
     environment:
       - NODE_ENV=production
-      # Express runtime port is provided via .env (default: 3445)
+      - PORT=3445
