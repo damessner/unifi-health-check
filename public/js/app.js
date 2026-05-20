@@ -10,6 +10,7 @@ let sandboxModeEnabled = false;
 let sandboxOverrides = {};
 let selectedAPMac = null;
 let activeTab = 'overview';
+let isAdmin = false;
 let searchQueryParams = {
   ap: '',
   ipad: ''
@@ -100,6 +101,9 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Set initial page header text
   updateHeaderContext();
+
+  // Check Admin session status
+  checkAdminStatus();
 
   // Load Initial Data
   fetchData();
@@ -1557,11 +1561,13 @@ function renderOptimalGrid() {
         : '<span class="text-muted">Disabled</span>';
     } else {
       cell24Ch = r24 
-        ? `<span class="${isCh24Drift ? 'text-drift' : ''}">${curCh24} ➔ <strong>${optCh24}</strong></span>`
+        ? `<span class="${isCh24Drift ? 'text-drift' : ''}">${curCh24} ➔ <strong>${optCh24}</strong></span>
+           ${(isAdmin && isCh24Drift) ? `<button class="btn-change-inline" onclick="applyApChannelChange(event, '${ap.mac}', 'ng', ${optCh24})"><i data-lucide="zap" style="width:10px;height:10px;"></i>Change</button>` : ''}`
         : '<span class="text-muted">Disabled</span>';
         
       cell5Ch = r5
-        ? `<span class="${isCh5Drift ? 'text-drift' : ''}">${curCh5} ➔ <strong>${optCh5}</strong></span>`
+        ? `<span class="${isCh5Drift ? 'text-drift' : ''}">${curCh5} ➔ <strong>${optCh5}</strong></span>
+           ${(isAdmin && isCh5Drift) ? `<button class="btn-change-inline" onclick="applyApChannelChange(event, '${ap.mac}', 'na', ${optCh5})"><i data-lucide="zap" style="width:10px;height:10px;"></i>Change</button>` : ''}`
         : '<span class="text-muted">Disabled</span>';
     }
 
@@ -3054,5 +3060,197 @@ function renderAllTabs() {
   
   if (window.lucide) {
     window.lucide.createIcons();
+  }
+}
+
+// ============================================================
+//  ADMIN AUTHENTICATION & CONTROLS
+// ============================================================
+
+/**
+ * Check if current user is authenticated as admin
+ */
+async function checkAdminStatus() {
+  try {
+    const res = await fetch('/api/auth/status');
+    if (res.ok) {
+      const data = await res.json();
+      isAdmin = data.authenticated;
+      updateAdminUI();
+    }
+  } catch (e) {
+    console.error('Error checking admin status:', e);
+  }
+}
+
+/**
+ * Show the login modal
+ */
+function showLoginModal() {
+  const modal = document.getElementById('login-modal');
+  const errorDiv = document.getElementById('login-error');
+  if (modal) modal.style.display = 'flex';
+  if (errorDiv) errorDiv.style.display = 'none';
+  
+  const userField = document.getElementById('login-username');
+  if (userField) {
+    userField.value = '';
+    userField.focus();
+  }
+  const passField = document.getElementById('login-password');
+  if (passField) passField.value = '';
+}
+
+/**
+ * Close the login modal
+ */
+function closeLoginModal() {
+  const modal = document.getElementById('login-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+/**
+ * Triggered on Admin button click in header
+ */
+function toggleAdminAuth() {
+  if (isAdmin) {
+    if (confirm('Are you sure you want to log out of admin mode?')) {
+      handleLogout();
+    }
+  } else {
+    showLoginModal();
+  }
+}
+
+/**
+ * Handle form submission in login modal
+ */
+async function handleLoginSubmit(e) {
+  e.preventDefault();
+  const usernameField = document.getElementById('login-username');
+  const passwordField = document.getElementById('login-password');
+  const errorDiv = document.getElementById('login-error');
+  const submitBtn = document.getElementById('btn-login-submit');
+
+  if (!usernameField || !passwordField) return;
+
+  const username = usernameField.value;
+  const password = passwordField.value;
+
+  if (submitBtn) submitBtn.disabled = true;
+  if (errorDiv) errorDiv.style.display = 'none';
+
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ username, password })
+    });
+
+    const data = await res.json();
+    if (res.ok && data.success) {
+      isAdmin = true;
+      showToast('Admin access unlocked successfully.', 'success');
+      closeLoginModal();
+      updateAdminUI();
+      renderOptimalGrid(); // Re-render table to show inline Change buttons
+    } else {
+      throw new Error(data.error || 'Invalid credentials');
+    }
+  } catch (err) {
+    if (errorDiv) {
+      errorDiv.textContent = err.message;
+      errorDiv.style.display = 'block';
+    }
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
+  }
+}
+
+/**
+ * Handle administrative logout
+ */
+async function handleLogout() {
+  try {
+    const res = await fetch('/api/auth/logout', { method: 'POST' });
+    if (res.ok) {
+      isAdmin = false;
+      showToast('Admin session closed.', 'info');
+      updateAdminUI();
+      renderOptimalGrid(); // Re-render table to remove inline Change buttons
+    }
+  } catch (e) {
+    console.error('Logout failed:', e);
+  }
+}
+
+/**
+ * Update header button state based on authentication status
+ */
+function updateAdminUI() {
+  const authBtn = document.getElementById('admin-auth-button');
+  const authText = document.getElementById('admin-auth-text');
+  const authIcon = document.getElementById('admin-auth-icon');
+
+  if (!authBtn) return;
+
+  if (isAdmin) {
+    authBtn.classList.add('authenticated');
+    authBtn.title = 'Admin Logout';
+    if (authText) authText.textContent = 'Admin Mode';
+    if (authIcon) {
+      authIcon.setAttribute('data-lucide', 'unlock');
+    }
+  } else {
+    authBtn.classList.remove('authenticated');
+    authBtn.title = 'Admin Login';
+    if (authText) authText.textContent = 'Admin Login';
+    if (authIcon) {
+      authIcon.setAttribute('data-lucide', 'lock');
+    }
+  }
+
+  if (window.lucide) {
+    window.lucide.createIcons();
+  }
+}
+
+/**
+ * Apply AP channel change request
+ */
+async function applyApChannelChange(e, apMac, radio, channel) {
+  const btn = e.currentTarget;
+  if (!btn || btn.disabled) return;
+  
+  if (!confirm(`Are you sure you want to change AP ${apMac} radio ${radio} to channel ${channel}?`)) {
+    return;
+  }
+  
+  btn.disabled = true;
+  btn.classList.add('loading');
+  
+  try {
+    const res = await fetch('/api/admin/change-channel', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ apMac, radio, channel })
+    });
+    
+    const data = await res.json();
+    if (res.ok && data.success) {
+      showToast(`Successfully updated channel to ${channel}!`, 'success');
+      // Trigger a force-refresh of the diagnostics data
+      await fetchData(true, true);
+    } else {
+      throw new Error(data.error || 'Server error');
+    }
+  } catch (err) {
+    showToast(`Failed to update channel: ${err.message}`, 'error');
+    btn.disabled = false;
+    btn.classList.remove('loading');
   }
 }
