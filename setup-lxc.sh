@@ -224,7 +224,7 @@ PORT=3445
 CACHE_EXPIRY_SEC=15
 HOST_PORT=$CONF_HOST_PORT
 API_TOKEN=
-UNIFI_ALLOW_SELF_SIGNED=false
+UNIFI_ALLOW_SELF_SIGNED=true
 EOF
     
     log_success "Environment config (.env) successfully generated!"
