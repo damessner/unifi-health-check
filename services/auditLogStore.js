@@ -11,7 +11,7 @@ class AuditLogStore {
     await fs.promises.mkdir(path.dirname(this.filePath), { recursive: true });
     try {
       await fs.promises.access(this.filePath, fs.constants.F_OK);
-    } catch (_) {
+    } catch (err) {
       await fs.promises.writeFile(this.filePath, '[]\n', 'utf8');
     }
   }

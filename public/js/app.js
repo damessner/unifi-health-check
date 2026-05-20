@@ -63,6 +63,8 @@ const CLIENT_SATISFACTION_WARNING_THRESHOLD = 85;
 const MAX_CASCADE_LOG_ENTRIES = 12;
 const MAX_CLIENT_CASCADE_LOG_ENTRIES = 8;
 const MAX_MODELED_ENDPOINTS = 60;
+const OPTIMAL_POWER_24GHZ = 9;
+const OPTIMAL_POWER_5GHZ = 18;
 
 
 // DOMContentLoaded Initialization
@@ -149,6 +151,10 @@ function formatRelativeTime(timestamp) {
   if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.round(minutes / 60);
   return `${hours}h ago`;
+}
+
+function getRadioBandLabel(radio) {
+  return radio === 'ng' ? '2.4GHz' : '5GHz';
 }
 
 function getProvisioningBadgeHtml(apMac, radio) {
@@ -447,7 +453,7 @@ function renderOverview() {
   if (!apiData) return;
 
   const summaryCh = apiData.channels.summary;
-  const summaryCl = apiData.clients.summary;
+  const clientSummary = apiData.clients.summary;
 
   // 1. Populate Metrics Cards
   const valAPs = document.getElementById('metric-total-aps');
@@ -459,17 +465,17 @@ function renderOverview() {
   }
 
   const valClients = document.getElementById('metric-total-clients');
-  if (valClients) valClients.textContent = summaryCl.totalAllClients;
+  if (valClients) valClients.textContent = clientSummary.totalAllClients;
 
   const subVendors = document.getElementById('metric-vendor-breakdown');
-  if (subVendors) subVendors.textContent = `${summaryCl.totalAppleClients} Apple devices online`;
+  if (subVendors) subVendors.textContent = `${clientSummary.totalAppleClients} Apple devices online`;
 
   const valIpads = document.getElementById('metric-total-ipads');
-  if (valIpads) valIpads.textContent = summaryCl.totalIpads;
+  if (valIpads) valIpads.textContent = clientSummary.totalIpads;
 
   const subIpadHealth = document.getElementById('metric-ipad-health');
   if (subIpadHealth) {
-    subIpadHealth.innerHTML = `iPad Health Index: <strong style="color: ${getHealthColor(summaryCl.healthIndex)}">${summaryCl.healthIndex}%</strong>`;
+    subIpadHealth.innerHTML = `iPad Health Index: <strong style="color: ${getHealthColor(clientSummary.healthIndex)}">${clientSummary.healthIndex}%</strong>`;
   }
 
   const valClogged = document.getElementById('metric-congested-radios');
@@ -477,7 +483,7 @@ function renderOverview() {
 
   const subWarnings = document.getElementById('metric-warning-radios');
   if (subWarnings) {
-    subWarnings.textContent = `${summaryCh.warningRadiosCount} warning radios | ${summaryCl.criticalCount} iPad criticals`;
+    subWarnings.textContent = `${summaryCh.warningRadiosCount} warning radios | ${clientSummary.criticalCount} iPad criticals`;
   }
 
   // Set card alert glow if congested radios exist
@@ -574,7 +580,7 @@ function renderOverview() {
           <div class="alert-icon text-success"><i data-lucide="check-circle-2"></i></div>
           <div class="alert-text healthy">
             <h4 style="color: #A7F3D0;">All Systems Normal</h4>
-            <p>We ran diagnostics across all ${summaryCh.totalAPs} APs and ${summaryCl.totalAppleClients} Apple devices. No channel congestion or client connectivity issues were detected!</p>
+            <p>We ran diagnostics across all ${summaryCh.totalAPs} APs and ${clientSummary.totalAppleClients} Apple devices. No channel congestion or client connectivity issues were detected!</p>
           </div>
         </div>
       `;
@@ -713,7 +719,7 @@ function renderChannelsTab() {
       const tr = document.createElement('tr');
       
       const healthBadge = `<span class="health-status-badge ${r.health}">${r.health}</span>`;
-      const bandName = r.radio === 'ng' ? '2.4GHz' : '5GHz';
+      const bandName = getRadioBandLabel(r.radio);
       const cciDisplay = r.cci_count > 0 
         ? `<strong style="color: ${r.cci_count > 10 ? 'var(--color-danger)' : 'var(--color-warning)'}">${r.cci_count} overlapping APs</strong>`
         : '<span style="color: var(--text-dark);">0 (Optimal)</span>';
@@ -1570,8 +1576,8 @@ function renderOptimalGrid() {
     const optCh24 = ap.optCh24;
     const optCh5 = ap.optCh5;
 
-    const optPower24 = 9;
-    const optPower5 = 18;
+    const optPower24 = OPTIMAL_POWER_24GHZ;
+    const optPower5 = OPTIMAL_POWER_5GHZ;
     const optMinRssi = -75;
 
     const r24 = ap.radios.ng;
@@ -1666,12 +1672,12 @@ function renderOptimalGrid() {
     }
 
     const cell24Power = r24
-      ? `<span class="${isPower24Drift ? 'text-drift' : ''}">${r24.tx_power_mode === 'auto' ? 'Auto' : `${curPower24} dBm`} ➔ <strong>9 dBm (Low)</strong></span>
+      ? `<span class="${isPower24Drift ? 'text-drift' : ''}">${r24.tx_power_mode === 'auto' ? 'Auto' : `${curPower24} dBm`} ➔ <strong>${OPTIMAL_POWER_24GHZ} dBm (Low)</strong></span>
          ${(isAdmin && isPower24Drift && !sandboxModeEnabled) ? `<button class="btn-change-inline" onclick="applyApRadioChange(event, '${ap.mac}', 'ng', null, ${optPower24})"><i data-lucide="radio" style="width:10px;height:10px;"></i>Power</button>` : ''}`
       : '<span class="text-muted">Disabled</span>';
 
     const cell5Power = r5
-      ? `<span class="${isPower5Drift ? 'text-drift' : ''}">${r5.tx_power_mode === 'auto' ? 'Auto' : `${curPower5} dBm`} ➔ <strong>18 dBm (Med)</strong></span>
+      ? `<span class="${isPower5Drift ? 'text-drift' : ''}">${r5.tx_power_mode === 'auto' ? 'Auto' : `${curPower5} dBm`} ➔ <strong>${OPTIMAL_POWER_5GHZ} dBm (Med)</strong></span>
          ${(isAdmin && isPower5Drift && !sandboxModeEnabled) ? `<button class="btn-change-inline" onclick="applyApRadioChange(event, '${ap.mac}', 'na', null, ${optPower5})"><i data-lucide="radio" style="width:10px;height:10px;"></i>Power</button>` : ''}`
       : '<span class="text-muted">Disabled</span>';
 
@@ -3240,7 +3246,7 @@ function renderAdminConsole() {
           const tr = document.createElement('tr');
           tr.innerHTML = `
             <td style="font-weight:600;">${escapeHtml(entry.apName || entry.apMac)}</td>
-            <td>${entry.radio === 'ng' ? '2.4GHz' : '5GHz'}</td>
+            <td>${getRadioBandLabel(entry.radio)}</td>
             <td>${entry.expectedChannel !== undefined && entry.expectedChannel !== null ? `Ch ${entry.expectedChannel}` : '—'}</td>
             <td>${entry.expectedTxPower !== undefined && entry.expectedTxPower !== null ? `${entry.expectedTxPower} dBm` : '—'}</td>
             <td>Ch ${entry.currentChannel || '—'} / ${entry.currentTxPower !== null && entry.currentTxPower !== undefined ? `${entry.currentTxPower} dBm` : '—'}</td>
@@ -3285,7 +3291,7 @@ function renderAdminConsole() {
           <td>${new Date(entry.timestamp).toLocaleString()}</td>
           <td>${escapeHtml(entry.username || 'admin')}</td>
           <td style="font-weight:600;">${escapeHtml(entry.apName || entry.apMac || 'Unknown AP')}</td>
-          <td>${entry.radio === 'ng' ? '2.4GHz' : '5GHz'}</td>
+          <td>${getRadioBandLabel(entry.radio)}</td>
           <td>${channelChange}</td>
           <td>${txPowerChange}</td>
           <td><span class="health-status-badge ${entry.status === 'success' ? 'healthy' : 'critical'}">${escapeHtml(entry.status || 'unknown')}</span></td>

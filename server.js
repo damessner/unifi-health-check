@@ -17,6 +17,8 @@ app.use(express.json());
 const adminSessions = new Map();
 const provisioningUpdates = new Map();
 const PROVISIONING_TTL_MS = 2 * 60 * 1000;
+const MIN_TX_POWER_DBM = 1;
+const MAX_TX_POWER_DBM = 30;
 
 function normalizeMac(mac) {
   return String(mac || '').trim().toLowerCase().replace(/-/g, ':');
@@ -384,8 +386,8 @@ app.post('/api/admin/change-channel', adminAuth, async (req, res) => {
   }
 
   const txPowerNum = rawTxPower === undefined ? undefined : parseInt(rawTxPower, 10);
-  if (rawTxPower !== undefined && (isNaN(txPowerNum) || txPowerNum < 1 || txPowerNum > 30)) {
-    return res.status(400).json({ success: false, error: 'tx_power must be an integer between 1 and 30 dBm' });
+  if (rawTxPower !== undefined && (isNaN(txPowerNum) || txPowerNum < MIN_TX_POWER_DBM || txPowerNum > MAX_TX_POWER_DBM)) {
+    return res.status(400).json({ success: false, error: `tx_power must be an integer between ${MIN_TX_POWER_DBM} and ${MAX_TX_POWER_DBM} dBm` });
   }
 
   let auditEntry = {

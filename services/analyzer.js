@@ -18,6 +18,12 @@ function getFriendlyModelName(model) {
   return MODEL_MAPPINGS[model] || model;
 }
 
+function getInterferenceImpact(signal, localOverlapCount) {
+  if (signal >= -60 && localOverlapCount > 0) return 'high';
+  if (localOverlapCount > 0) return 'medium';
+  return 'low';
+}
+
 class NetworkAnalyzer {
   /**
    * Run RF channel loading and interference diagnostics.
@@ -404,7 +410,7 @@ class NetworkAnalyzer {
         band,
         signal,
         localOverlapCount: localCount,
-        impact: signal >= -60 && localCount > 0 ? 'high' : (localCount > 0 ? 'medium' : 'low')
+        impact: getInterferenceImpact(signal, localCount)
       };
     }).filter((item) => item.channel > 0);
 
