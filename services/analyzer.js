@@ -58,7 +58,7 @@ class NetworkAnalyzer {
           const rSetting = radioSettings[rs.radio] || {};
 
           apRadios.push({
-            apName: ap.name || ap.mac,
+            apName: ap.name || ap.hostname || getFriendlyModelName(ap.model) || ap.mac,
             apMac: ap.mac,
             ip: ap.ip,
             model: getFriendlyModelName(ap.model),
@@ -167,7 +167,7 @@ class NetworkAnalyzer {
     // Map AP MAC to AP Name for easy lookup
     const apMap = {};
     devices.forEach(d => {
-      apMap[d.mac] = d.name || d.ip || d.mac;
+      apMap[d.mac] = d.name || d.hostname || getFriendlyModelName(d.model) || d.ip || d.mac;
     });
 
     // Create a dictionary of AP radio channel utilization for client lookup
