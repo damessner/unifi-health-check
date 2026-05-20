@@ -62,12 +62,13 @@ log_info "Detecting next available Container ID (VMID)..."
 NEXT_VMID=$(pvesh get /cluster/nextid 2>/dev/null | tr -d '"' || true)
 
 if [ -z "$NEXT_VMID" ] || ! [[ "$NEXT_VMID" =~ ^[0-9]+$ ]]; then
-    # Fallback numerical scanning if API returns empty
     NEXT_VMID=100
-    while pct status "$NEXT_VMID" >/dev/null 2>&1 || qm status "$NEXT_VMID" >/dev/null 2>&1; do
-        NEXT_VMID=$((NEXT_VMID + 1))
-    done
 fi
+
+# Scan upwards to ensure the assigned VMID is not already in use by pct or qm
+while pct status "$NEXT_VMID" >/dev/null 2>&1 || qm status "$NEXT_VMID" >/dev/null 2>&1; do
+    NEXT_VMID=$((NEXT_VMID + 1))
+done
 log_success "Assigned Container ID: ${BOLD}${NEXT_VMID}${NC}"
 
 # 3. Automatically detect Storage
