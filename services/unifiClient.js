@@ -160,7 +160,90 @@ class UnifiClient {
       return MOCK_CLIENTS;
     }
   }
+
+  /**
+   * Helper to perform an authenticated PUT request, with automatic login retry if needed.
+   * @param {string} path - API endpoint path
+   * @param {Object} payload - JSON body
+   */
+  async _putWithRetry(path, payload) {
+    if (!this.cookie) {
+      await this.login();
+    }
+
+    try {
+      let res = await this._request({ method: 'PUT', path }, payload);
+      
+      // If we get an unauthorized or login-required error, retry login and query once
+      if (res.statusCode === 401 || res.statusCode === 400 || (res.body && res.body.includes('api.err.LoginRequired'))) {
+        console.warn(`[UniFi] Session expired (status ${res.statusCode}). Re-authenticating...`);
+        await this.login();
+        res = await this._request({ method: 'PUT', path }, payload);
+      }
+
+      if (res.statusCode !== 200) {
+        throw new Error(`API call to ${path} failed with status ${res.statusCode}: ${res.body}`);
+      }
+
+      const data = JSON.parse(res.body);
+      return data.data || [];
+    } catch (err) {
+      console.error(`[UniFi] Error updating ${path}:`, err.message);
+      throw err;
+    }
+  }
+
+  /**
+   * Update settings for a specific AP device.
+   * @param {string} deviceId - Internal device ID (_id)
+   * @param {Object} settings - Object of settings to update
+   */
+  async updateDeviceSettings(deviceId, settings) {
+    if (process.env.MOCK_MODE === 'true') {
+      console.log(`[UniFi Mock] Simulating updating device ${deviceId} settings:`, JSON.stringify(settings));
+      return [{ _id: deviceId, ...settings }];
+    }
+    return await this._putWithRetry(`/api/s/${this.site}/rest/device/${deviceId}`, settings);
+  }
+
+  /**
+   * Update the channel for a specific AP's radio.
+   * @param {string} apMac - MAC address of the target AP
+   * @param {string} radio - Radio band name ('ng' or 'na')
+   * @param {number} channel - New channel to set
+   */
+  async setApChannel(apMac, radio, channel) {
+    // 1. Fetch current devices to locate the AP and its internal ID
+    const devices = await this.getDevices();
+    const ap = devices.find(d => d.mac === apMac);
+    if (!ap) {
+      throw new Error(`Access Point with MAC ${apMac} not found.`);
+    }
+
+    const deviceId = ap._id;
+    if (!deviceId) {
+      throw new Error(`Internal device ID not found for AP with MAC ${apMac}`);
+    }
+
+    // 2. Clone and modify the radio table
+    const radioTable = ap.radio_table ? JSON.parse(JSON.stringify(ap.radio_table)) : [];
+    const rIndex = radioTable.findIndex(r => r.radio === radio);
+    if (rIndex === -1) {
+      throw new Error(`Radio band "${radio}" not found on AP ${apMac}`);
+    }
+
+    // Update channel
+    radioTable[rIndex].channel = parseInt(channel, 10);
+
+    // 3. Send update payload to UniFi controller
+    const payload = {
+      radio_table: radioTable
+    };
+
+    return await this.updateDeviceSettings(deviceId, payload);
+  }
 }
+
 
 const MOCK_DEVICES = buildMockDevices(12);
 const MOCK_CLIENTS = buildMockClients(MOCK_DEVICES, 60);
@@ -178,6 +261,7 @@ function buildMockDevices(count) {
     const utilBase = 25 + (i * 7) % 55;
 
     devices.push({
+      _id: `mock-ap-${id}`,
       type: 'uap',
       name: `AP-${id}`,
       mac,

@@ -23,5 +23,9 @@ module.exports = {
     port: parseInt(process.env.PORT, 10) || 3445,
     cacheExpiryMs: (parseInt(process.env.CACHE_EXPIRY_SEC, 10) || 15) * 1000,
     apiToken: process.env.API_TOKEN || ''
+  },
+  admin: {
+    username: process.env.ADMIN_USER || 'admin',
+    password: process.env.ADMIN_PASS || 'admin'
   }
 };

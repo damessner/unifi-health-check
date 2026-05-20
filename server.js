@@ -12,7 +12,36 @@ const PORT = config.server.port;
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 
+// Session store in memory
+const adminSessions = new Set();
+
+// Middleware to authenticate admin requests using a session cookie or header
+function adminAuth(req, res, next) {
+  let token = null;
+  if (req.headers.cookie) {
+    const cookies = req.headers.cookie.split(';').reduce((acc, c) => {
+      const parts = c.trim().split('=');
+      if (parts.length >= 2) {
+        acc[parts[0]] = parts.slice(1).join('=');
+      }
+      return acc;
+    }, {});
+    token = cookies.admin_session;
+  }
+  if (!token) {
+    token = req.get('x-admin-token');
+  }
+
+  if (!token || !adminSessions.has(token)) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
+  next();
+}
+
 app.use('/api', (req, res, next) => {
+  // Allow auth and admin endpoints to bypass the general API token check
+  if (req.path.startsWith('/auth/') || req.path.startsWith('/admin/')) return next();
+
   if (!config.server.apiToken) return next();
   const provided = req.get('x-api-token');
   if (provided !== config.server.apiToken) {
@@ -210,6 +239,110 @@ app.get('/api/export/xlsx', async (req, res) => {
   } catch (err) {
     console.error('[Export] XLSX generation failed:', err);
     res.status(500).json({ success: false, error: 'Failed to generate XLSX report.', details: err.message });
+  }
+});
+
+/**
+ * API: Admin login
+ */
+app.post('/api/auth/login', (req, res) => {
+  const { username, password } = req.body || {};
+  if (!username || !password) {
+    return res.status(400).json({ success: false, error: 'Username and password are required' });
+  }
+
+  if (username === config.admin.username && password === config.admin.password) {
+    const token = Math.random().toString(36).substring(2) + Date.now().toString(36);
+    adminSessions.add(token);
+    res.setHeader('Set-Cookie', `admin_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800`); // 8 hours
+    return res.json({ success: true, token });
+  }
+
+  return res.status(401).json({ success: false, error: 'Invalid credentials' });
+});
+
+/**
+ * API: Admin logout
+ */
+app.post('/api/auth/logout', (req, res) => {
+  let token = null;
+  if (req.headers.cookie) {
+    const cookies = req.headers.cookie.split(';').reduce((acc, c) => {
+      const parts = c.trim().split('=');
+      if (parts.length >= 2) {
+        acc[parts[0]] = parts.slice(1).join('=');
+      }
+      return acc;
+    }, {});
+    token = cookies.admin_session;
+  }
+  if (!token) {
+    token = req.get('x-admin-token');
+  }
+
+  if (token) {
+    adminSessions.delete(token);
+  }
+
+  res.setHeader('Set-Cookie', 'admin_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0');
+  return res.json({ success: true });
+});
+
+/**
+ * API: Check admin auth status
+ */
+app.get('/api/auth/status', (req, res) => {
+  let token = null;
+  if (req.headers.cookie) {
+    const cookies = req.headers.cookie.split(';').reduce((acc, c) => {
+      const parts = c.trim().split('=');
+      if (parts.length >= 2) {
+        acc[parts[0]] = parts.slice(1).join('=');
+      }
+      return acc;
+    }, {});
+    token = cookies.admin_session;
+  }
+  if (!token) {
+    token = req.get('x-admin-token');
+  }
+
+  const authenticated = !!(token && adminSessions.has(token));
+  return res.json({ success: true, authenticated });
+});
+
+/**
+ * API: Admin channel change - strictly restricted to channel updates
+ */
+app.post('/api/admin/change-channel', adminAuth, async (req, res) => {
+  const { apMac, radio, channel } = req.body || {};
+
+  // Strict validation: only channel change is allowed
+  if (!apMac || !radio || channel === undefined) {
+    return res.status(400).json({ success: false, error: 'apMac, radio, and channel are required' });
+  }
+
+  const macRegex = /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/;
+  if (!macRegex.test(apMac)) {
+    return res.status(400).json({ success: false, error: 'Invalid MAC address format' });
+  }
+
+  if (radio !== 'ng' && radio !== 'na') {
+    return res.status(400).json({ success: false, error: 'Radio must be "ng" (2.4GHz) or "na" (5GHz)' });
+  }
+
+  const channelNum = parseInt(channel, 10);
+  if (isNaN(channelNum) || channelNum <= 0) {
+    return res.status(400).json({ success: false, error: 'Channel must be a valid positive integer' });
+  }
+
+  try {
+    const result = await unifiClient.setApChannel(apMac, radio, channelNum);
+    console.log(`[Admin API] Successfully updated AP ${apMac} radio ${radio} to channel ${channelNum}`);
+    return res.json({ success: true, message: `Channel successfully updated to ${channelNum}`, result });
+  } catch (err) {
+    console.error(`[Admin API] Channel change failed for AP ${apMac}:`, err.message);
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
