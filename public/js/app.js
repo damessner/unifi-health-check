@@ -11,6 +11,10 @@ let sandboxOverrides = {};
 let selectedAPMac = null;
 let activeTab = 'overview';
 let isAdmin = false;
+let adminUsername = null;
+let provisioningState = {};
+let adminAuditLog = [];
+let adminSubTab = 'actions';
 let searchQueryParams = {
   ap: '',
   ipad: ''
@@ -130,6 +134,34 @@ function updatePrintProgress() {
   }
 }
 
+function getProvisioningEntry(apMac, radio) {
+  const key = `${String(apMac || '').toLowerCase()}:${radio}`;
+  return provisioningState[key] || null;
+}
+
+function formatRelativeTime(timestamp) {
+  if (!timestamp) return 'just now';
+  const diffMs = Date.now() - new Date(timestamp).getTime();
+  if (!Number.isFinite(diffMs) || diffMs < 0) return 'just now';
+  const seconds = Math.round(diffMs / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  return `${hours}h ago`;
+}
+
+function getProvisioningBadgeHtml(apMac, radio) {
+  const entry = getProvisioningEntry(apMac, radio);
+  if (!entry) return '';
+  return `
+    <span class="provisioning-badge" title="Provisioning in progress. Current telemetry can lag until UniFi applies the change.">
+      <span class="mini-spinner"></span>
+      Provisioning…
+    </span>
+  `;
+}
+
 /**
  * Toggle checked status for an AP and save to localStorage
  * @param {string} mac 
@@ -215,6 +247,9 @@ function switchTab(tabId) {
     // Lazily load history when navigating to the history tab
     if (tabId === 'history') {
       fetchAndRenderHistory();
+    } else if (tabId === 'admin') {
+      fetchAuditLog();
+      renderAdminConsole();
     }
   }
 }
@@ -250,6 +285,10 @@ function updateHeaderContext() {
     history: {
       title: 'History & Trends',
       subtitle: 'Trend analysis of channel utilization, client counts and network speeds over time'
+    },
+    admin: {
+      title: 'Admin Console',
+      subtitle: 'Controlled AP changes, provisioning state, and administrative audit history'
     },
     optimizer: {
       title: 'SSID & RF Optimization Plan',
@@ -292,6 +331,7 @@ async function fetchData(isSilent = false, force = false) {
     if (!payload.success) throw new Error(payload.error || 'Server returned negative status');
 
     rawApiData = payload;
+    provisioningState = payload.provisioning || {};
     if (Array.isArray(rawApiData.aps)) {
       rawApiData.aps = rawApiData.aps.slice(0, MAX_MODELED_ENDPOINTS);
     }
@@ -332,6 +372,7 @@ async function fetchData(isSilent = false, force = false) {
     renderChannelsTab();
     renderApsTab();
     renderIpadsTab();
+    renderAdminConsole();
     updateGlobalBadges();
     renderOptimalGrid();
     renderProximityMap();
@@ -418,10 +459,10 @@ function renderOverview() {
   }
 
   const valClients = document.getElementById('metric-total-clients');
-  if (valClients) valClients.textContent = summaryCl.totalAppleClients;
+  if (valClients) valClients.textContent = summaryCl.totalAllClients;
 
   const subVendors = document.getElementById('metric-vendor-breakdown');
-  if (subVendors) subVendors.textContent = `${summaryCl.totalIpads} Apple iPads detected`;
+  if (subVendors) subVendors.textContent = `${summaryCl.totalAppleClients} Apple devices online`;
 
   const valIpads = document.getElementById('metric-total-ipads');
   if (valIpads) valIpads.textContent = summaryCl.totalIpads;
@@ -698,6 +739,51 @@ function renderChannelsTab() {
       tableBody.appendChild(tr);
     });
   }
+
+  const interference = apiData.interference || { summary: {}, networks: [], recommendations: [] };
+  const rogueCountLabel = document.getElementById('rogue-ap-count-label');
+  const rogueOverlap24 = document.getElementById('rogue-overlap-24');
+  const rogueOverlap5 = document.getElementById('rogue-overlap-5');
+  const rogueStrongest = document.getElementById('rogue-strongest-signal');
+  const rogueNote = document.getElementById('rogue-analysis-note');
+  const rogueBody = document.getElementById('rogue-ap-table-body');
+
+  if (rogueCountLabel) rogueCountLabel.textContent = `${interference.summary.totalDetected || 0} interferers detected`;
+  if (rogueOverlap24) rogueOverlap24.textContent = interference.summary.overlapping24 || 0;
+  if (rogueOverlap5) rogueOverlap5.textContent = interference.summary.overlapping5 || 0;
+  if (rogueStrongest) rogueStrongest.textContent = interference.summary.strongestSignal !== null && interference.summary.strongestSignal !== undefined
+    ? `${interference.summary.strongestSignal} dBm`
+    : '--';
+  if (rogueNote) {
+    rogueNote.className = 'analysis-note';
+    rogueNote.innerHTML = interference.recommendations && interference.recommendations.length > 0
+      ? `<strong>Observed impact:</strong> ${escapeHtml(interference.recommendations.join(' '))}`
+      : '<strong>Observed impact:</strong> No external neighbors currently overlap active school channels.';
+  }
+
+  if (rogueBody) {
+    rogueBody.innerHTML = '';
+    const networks = interference.networks || [];
+    if (networks.length === 0) {
+      rogueBody.innerHTML = `
+        <tr>
+          <td colspan="5" style="text-align:center; padding:32px; color:var(--text-dark);">No rogue AP telemetry available from the controller.</td>
+        </tr>
+      `;
+    } else {
+      networks.slice(0, 20).forEach((network) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td style="font-weight:600;">${escapeHtml(network.ssid)}</td>
+          <td>${network.band} / <strong>Ch ${network.channel}</strong></td>
+          <td>${network.signal} dBm</td>
+          <td>${network.localOverlapCount} school radio${network.localOverlapCount === 1 ? '' : 's'}</td>
+          <td><span class="health-status-badge ${network.impact === 'high' ? 'critical' : (network.impact === 'medium' ? 'warning' : 'healthy')}">${network.impact}</span></td>
+        `;
+        rogueBody.appendChild(tr);
+      });
+    }
+  }
 }
 
 /**
@@ -744,6 +830,8 @@ function filterAPs() {
     }
     
     apList[r.apMac].radios[r.radio] = {
+      apMac: r.apMac,
+      radio: r.radio,
       channel: r.channel,
       cu_total: r.cu_total,
       cci_count: r.cci_count,
@@ -820,11 +908,13 @@ function filterAPs() {
     const display5 = getRadioCardHtml(ap.radios.na);
     const displayMinRssi = getMinRssiHtml(ap);
     const overallBadge = `<span class="health-status-badge ${ap.maxSeverity}">${ap.maxSeverity}</span>`;
+    const provisioningBadges = [getProvisioningBadgeHtml(ap.mac, 'ng'), getProvisioningBadgeHtml(ap.mac, 'na')].filter(Boolean).join('');
 
     tr.innerHTML = `
       <td>
         <div class="ap-info-cell">
           <span class="ap-name-title">${escapeHtml(ap.name)}</span>
+          ${provisioningBadges ? `<div class="ap-provisioning-wrap">${provisioningBadges}</div>` : ''}
           <div class="ap-meta-sub">
             <span class="ap-ip-badge">${ap.ip}</span>
             <span class="ap-model-badge">${ap.model}</span>
@@ -1279,6 +1369,7 @@ function getRadioCardHtml(r) {
 
   const powerDisplay = r.tx_power !== null ? `${r.tx_power} dBm` : (r.configured_tx_power !== null ? `${r.configured_tx_power} dBm` : 'Auto');
   const powerModeLbl = r.tx_power_mode ? r.tx_power_mode.toUpperCase() : 'AUTO';
+  const provisioningBadge = getProvisioningBadgeHtml(r.apMac, r.radio);
   
   const utilClass = r.cu_total > 70 ? 'bad' : (r.cu_total > 40 ? 'warning' : 'good');
   const bwDisplay = r.bw ? `${r.bw}MHz` : (r.ht || '');
@@ -1289,6 +1380,7 @@ function getRadioCardHtml(r) {
         <span class="channel-main">Ch <strong>${r.channel}</strong></span>
         ${bwDisplay ? `<span class="width-badge">${bwDisplay}</span>` : ''}
       </div>
+      ${provisioningBadge}
       <div class="radio-details-grid">
         <div class="radio-stat">
           <span class="stat-lbl">Power</span>
@@ -1438,7 +1530,7 @@ function renderOptimalGrid() {
     const isCh24Drift = r24 && curCh24 !== optCh24;
     const isCh5Drift = r5 && curCh5 !== optCh5;
     const isPower24Drift = r24 && (r24.tx_power_mode === 'auto' || (curPower24 !== null && curPower24 > 10));
-    const isPower5Drift = r5 && (r5.tx_power_mode === 'auto' || (curPower5 !== null && curPower5 > 16));
+    const isPower5Drift = r5 && (r5.tx_power_mode === 'auto' || (curPower5 !== null && curPower5 > 18));
     const isMinRssiDrift = !curMinRssi || curMinRssi !== -75;
 
     const hasDrift = isCh24Drift || isCh5Drift || isPower24Drift || isPower5Drift || isMinRssiDrift;
@@ -1479,7 +1571,7 @@ function renderOptimalGrid() {
     const optCh5 = ap.optCh5;
 
     const optPower24 = 9;
-    const optPower5 = 15;
+    const optPower5 = 18;
     const optMinRssi = -75;
 
     const r24 = ap.radios.ng;
@@ -1562,21 +1654,25 @@ function renderOptimalGrid() {
     } else {
       cell24Ch = r24 
         ? `<span class="${isCh24Drift ? 'text-drift' : ''}">${curCh24} ➔ <strong>${optCh24}</strong></span>
-           ${(isAdmin && isCh24Drift) ? `<button class="btn-change-inline" onclick="applyApChannelChange(event, '${ap.mac}', 'ng', ${optCh24})"><i data-lucide="zap" style="width:10px;height:10px;"></i>Change</button>` : ''}`
-        : '<span class="text-muted">Disabled</span>';
-        
+           ${getProvisioningBadgeHtml(ap.mac, 'ng')}
+           ${(isAdmin && isCh24Drift) ? `<button class="btn-change-inline" onclick="applyApRadioChange(event, '${ap.mac}', 'ng', ${optCh24}, null)"><i data-lucide="zap" style="width:10px;height:10px;"></i>Change</button>` : ''}`
+         : '<span class="text-muted">Disabled</span>';
+         
       cell5Ch = r5
         ? `<span class="${isCh5Drift ? 'text-drift' : ''}">${curCh5} ➔ <strong>${optCh5}</strong></span>
-           ${(isAdmin && isCh5Drift) ? `<button class="btn-change-inline" onclick="applyApChannelChange(event, '${ap.mac}', 'na', ${optCh5})"><i data-lucide="zap" style="width:10px;height:10px;"></i>Change</button>` : ''}`
-        : '<span class="text-muted">Disabled</span>';
+           ${getProvisioningBadgeHtml(ap.mac, 'na')}
+           ${(isAdmin && isCh5Drift) ? `<button class="btn-change-inline" onclick="applyApRadioChange(event, '${ap.mac}', 'na', ${optCh5}, null)"><i data-lucide="zap" style="width:10px;height:10px;"></i>Change</button>` : ''}`
+         : '<span class="text-muted">Disabled</span>';
     }
 
     const cell24Power = r24
-      ? `<span class="${isPower24Drift ? 'text-drift' : ''}">${r24.tx_power_mode === 'auto' ? 'Auto' : `${curPower24} dBm`} ➔ <strong>9 dBm (Low)</strong></span>`
+      ? `<span class="${isPower24Drift ? 'text-drift' : ''}">${r24.tx_power_mode === 'auto' ? 'Auto' : `${curPower24} dBm`} ➔ <strong>9 dBm (Low)</strong></span>
+         ${(isAdmin && isPower24Drift && !sandboxModeEnabled) ? `<button class="btn-change-inline" onclick="applyApRadioChange(event, '${ap.mac}', 'ng', null, ${optPower24})"><i data-lucide="radio" style="width:10px;height:10px;"></i>Power</button>` : ''}`
       : '<span class="text-muted">Disabled</span>';
 
     const cell5Power = r5
-      ? `<span class="${isPower5Drift ? 'text-drift' : ''}">${r5.tx_power_mode === 'auto' ? 'Auto' : `${curPower5} dBm`} ➔ <strong>15 dBm (Med)</strong></span>`
+      ? `<span class="${isPower5Drift ? 'text-drift' : ''}">${r5.tx_power_mode === 'auto' ? 'Auto' : `${curPower5} dBm`} ➔ <strong>18 dBm (Med)</strong></span>
+         ${(isAdmin && isPower5Drift && !sandboxModeEnabled) ? `<button class="btn-change-inline" onclick="applyApRadioChange(event, '${ap.mac}', 'na', null, ${optPower5})"><i data-lucide="radio" style="width:10px;height:10px;"></i>Power</button>` : ''}`
       : '<span class="text-muted">Disabled</span>';
 
     const cellMinRssi = `<span class="${isMinRssiDrift ? 'text-drift' : ''}">${curMinRssi ? `${curMinRssi} dBm` : 'Disabled'} ➔ <strong>-75 dBm</strong></span>`;
@@ -3049,6 +3145,7 @@ function renderAllTabs() {
   renderChannelsTab();
   renderApsTab();
   renderIpadsTab();
+  renderAdminConsole();
   updateGlobalBadges();
   renderOptimalGrid();
   renderProximityMap();
@@ -3064,6 +3161,144 @@ function renderAllTabs() {
 }
 
 // ============================================================
+//  ADMIN CONSOLE
+// ============================================================
+
+function switchAdminSubTab(tabId) {
+  adminSubTab = tabId;
+  document.querySelectorAll('.admin-subtab-btn').forEach((btn) => btn.classList.remove('active'));
+  document.querySelectorAll('.admin-subtab-pane').forEach((pane) => pane.classList.remove('active'));
+
+  const button = document.getElementById(`admin-subtab-${tabId}`);
+  const pane = document.getElementById(`admin-subtab-pane-${tabId}`);
+  if (button) button.classList.add('active');
+  if (pane) pane.classList.add('active');
+}
+
+async function fetchAuditLog(showRefreshToast = false) {
+  if (!isAdmin) {
+    renderAdminConsole();
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/admin/audit-log');
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to load audit log');
+    }
+    adminAuditLog = Array.isArray(data.entries) ? data.entries : [];
+    if (showRefreshToast) {
+      showToast('Administrative audit log refreshed.', 'success');
+    }
+  } catch (err) {
+    console.error('Failed to load audit log:', err);
+    if (showRefreshToast) {
+      showToast(`Failed to refresh audit log: ${err.message}`, 'error');
+    }
+  } finally {
+    renderAdminConsole();
+  }
+}
+
+function renderAdminConsole() {
+  const statusLabel = document.getElementById('admin-status-label');
+  const provisioningCount = document.getElementById('admin-provisioning-count');
+  const auditCount = document.getElementById('admin-audit-count');
+  const provisioningNote = document.getElementById('admin-provisioning-note');
+  const provisioningBody = document.getElementById('admin-provisioning-body');
+  const auditNote = document.getElementById('admin-audit-note');
+  const auditBody = document.getElementById('admin-audit-body');
+
+  const provisioningEntries = Object.values(provisioningState || {});
+
+  if (statusLabel) statusLabel.textContent = isAdmin ? (adminUsername || 'Unlocked') : 'Locked';
+  if (provisioningCount) provisioningCount.textContent = provisioningEntries.length;
+  if (auditCount) auditCount.textContent = adminAuditLog.length;
+
+  if (provisioningNote) {
+    provisioningNote.className = 'analysis-note';
+    provisioningNote.innerHTML = isAdmin
+      ? (provisioningEntries.length > 0
+          ? '<strong>Controller state:</strong> UniFi is still provisioning one or more AP changes. Live telemetry may briefly show the old channel or power until the controller finishes applying the update.'
+          : '<strong>Controller state:</strong> No AP changes are currently provisioning.')
+      : '<strong>Access required:</strong> Log in as admin to unlock change controls and view the live provisioning queue.';
+  }
+
+  if (provisioningBody) {
+    provisioningBody.innerHTML = '';
+    if (provisioningEntries.length === 0) {
+      provisioningBody.innerHTML = `
+        <tr>
+          <td colspan="6" style="text-align:center; padding:32px; color:var(--text-dark);">No pending provisioning actions.</td>
+        </tr>
+      `;
+    } else {
+      provisioningEntries
+        .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())
+        .forEach((entry) => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td style="font-weight:600;">${escapeHtml(entry.apName || entry.apMac)}</td>
+            <td>${entry.radio === 'ng' ? '2.4GHz' : '5GHz'}</td>
+            <td>${entry.expectedChannel !== undefined && entry.expectedChannel !== null ? `Ch ${entry.expectedChannel}` : '—'}</td>
+            <td>${entry.expectedTxPower !== undefined && entry.expectedTxPower !== null ? `${entry.expectedTxPower} dBm` : '—'}</td>
+            <td>Ch ${entry.currentChannel || '—'} / ${entry.currentTxPower !== null && entry.currentTxPower !== undefined ? `${entry.currentTxPower} dBm` : '—'}</td>
+            <td>${formatRelativeTime(entry.startedAt)}</td>
+          `;
+          provisioningBody.appendChild(tr);
+        });
+    }
+  }
+
+  if (auditNote) {
+    auditNote.className = 'analysis-note';
+    auditNote.innerHTML = isAdmin
+      ? '<strong>Audit trail:</strong> Every admin channel or TX power change is persisted to <code>data/audit.json</code> for accountability.'
+      : '<strong>Access required:</strong> Log in as admin to load the server-side audit history.';
+  }
+
+  if (auditBody) {
+    auditBody.innerHTML = '';
+    if (!isAdmin) {
+      auditBody.innerHTML = `
+        <tr>
+          <td colspan="7" style="text-align:center; padding:32px; color:var(--text-dark);">Admin authentication required to view the audit log.</td>
+        </tr>
+      `;
+    } else if (adminAuditLog.length === 0) {
+      auditBody.innerHTML = `
+        <tr>
+          <td colspan="7" style="text-align:center; padding:32px; color:var(--text-dark);">No administrative changes have been recorded yet.</td>
+        </tr>
+      `;
+    } else {
+      adminAuditLog.slice(0, 50).forEach((entry) => {
+        const tr = document.createElement('tr');
+        const channelChange = entry.newChannel !== null && entry.newChannel !== undefined
+          ? `${entry.oldChannel ?? '—'} ➔ ${entry.newChannel}`
+          : '—';
+        const txPowerChange = entry.newTxPower !== null && entry.newTxPower !== undefined
+          ? `${entry.oldTxPower ?? '—'} ➔ ${entry.newTxPower} dBm`
+          : '—';
+        tr.innerHTML = `
+          <td>${new Date(entry.timestamp).toLocaleString()}</td>
+          <td>${escapeHtml(entry.username || 'admin')}</td>
+          <td style="font-weight:600;">${escapeHtml(entry.apName || entry.apMac || 'Unknown AP')}</td>
+          <td>${entry.radio === 'ng' ? '2.4GHz' : '5GHz'}</td>
+          <td>${channelChange}</td>
+          <td>${txPowerChange}</td>
+          <td><span class="health-status-badge ${entry.status === 'success' ? 'healthy' : 'critical'}">${escapeHtml(entry.status || 'unknown')}</span></td>
+        `;
+        auditBody.appendChild(tr);
+      });
+    }
+  }
+
+  switchAdminSubTab(adminSubTab);
+}
+
+// ============================================================
 //  ADMIN AUTHENTICATION & CONTROLS
 // ============================================================
 
@@ -3076,6 +3311,7 @@ async function checkAdminStatus() {
     if (res.ok) {
       const data = await res.json();
       isAdmin = data.authenticated;
+      adminUsername = data.username || null;
       updateAdminUI();
     }
   } catch (e) {
@@ -3152,10 +3388,12 @@ async function handleLoginSubmit(e) {
     const data = await res.json();
     if (res.ok && data.success) {
       isAdmin = true;
+      adminUsername = username;
       showToast('Admin access unlocked successfully.', 'success');
       closeLoginModal();
       updateAdminUI();
       renderOptimalGrid(); // Re-render table to show inline Change buttons
+      fetchAuditLog();
     } else {
       throw new Error(data.error || 'Invalid credentials');
     }
@@ -3177,6 +3415,7 @@ async function handleLogout() {
     const res = await fetch('/api/auth/logout', { method: 'POST' });
     if (res.ok) {
       isAdmin = false;
+      adminUsername = null;
       showToast('Admin session closed.', 'info');
       updateAdminUI();
       renderOptimalGrid(); // Re-render table to remove inline Change buttons
@@ -3199,7 +3438,7 @@ function updateAdminUI() {
   if (isAdmin) {
     authBtn.classList.add('authenticated');
     authBtn.title = 'Admin Logout';
-    if (authText) authText.textContent = 'Admin Mode';
+    if (authText) authText.textContent = adminUsername ? `Admin: ${adminUsername}` : 'Admin Mode';
     if (authIcon) {
       authIcon.setAttribute('data-lucide', 'unlock');
     }
@@ -3215,16 +3454,21 @@ function updateAdminUI() {
   if (window.lucide) {
     window.lucide.createIcons();
   }
+  renderAdminConsole();
 }
 
 /**
- * Apply AP channel change request
+ * Apply AP channel / TX power change request
  */
-async function applyApChannelChange(e, apMac, radio, channel) {
+async function applyApRadioChange(e, apMac, radio, channel, txPower) {
   const btn = e.currentTarget;
   if (!btn || btn.disabled) return;
-  
-  if (!confirm(`Are you sure you want to change AP ${apMac} radio ${radio} to channel ${channel}?`)) {
+
+  const radioLabel = radio === 'ng' ? '2.4GHz' : '5GHz';
+  const changes = [];
+  if (channel !== null && channel !== undefined) changes.push(`channel ${channel}`);
+  if (txPower !== null && txPower !== undefined) changes.push(`TX power ${txPower} dBm`);
+  if (!confirm(`Are you sure you want to change AP ${apMac} ${radioLabel} radio to ${changes.join(' and ')}?`)) {
     return;
   }
   
@@ -3237,20 +3481,29 @@ async function applyApChannelChange(e, apMac, radio, channel) {
       headers: {
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ apMac, radio, channel })
+      body: JSON.stringify({
+        apMac,
+        radio,
+        ...(channel !== null && channel !== undefined ? { channel } : {}),
+        ...(txPower !== null && txPower !== undefined ? { tx_power: txPower } : {})
+      })
     });
     
     const data = await res.json();
     if (res.ok && data.success) {
-      showToast(`Successfully updated channel to ${channel}!`, 'success');
-      // Trigger a force-refresh of the diagnostics data
+      showToast(`Successfully queued ${changes.join(' and ')} update.`, 'success');
       await fetchData(true, true);
+      await fetchAuditLog();
     } else {
       throw new Error(data.error || 'Server error');
     }
   } catch (err) {
-    showToast(`Failed to update channel: ${err.message}`, 'error');
+    showToast(`Failed to update radio: ${err.message}`, 'error');
     btn.disabled = false;
     btn.classList.remove('loading');
   }
+}
+
+async function applyApChannelChange(e, apMac, radio, channel) {
+  return applyApRadioChange(e, apMac, radio, channel, null);
 }

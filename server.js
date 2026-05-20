@@ -4,6 +4,7 @@ const config = require('./config');
 const unifiClient = require('./services/unifiClient');
 const analyzer = require('./services/analyzer');
 const xlsxExporter = require('./services/xlsxExporter');
+const auditLogStore = require('./services/auditLogStore');
 
 const app = express();
 const PORT = config.server.port;
@@ -13,10 +14,15 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 
 // Session store in memory
-const adminSessions = new Set();
+const adminSessions = new Map();
+const provisioningUpdates = new Map();
+const PROVISIONING_TTL_MS = 2 * 60 * 1000;
 
-// Middleware to authenticate admin requests using a session cookie or header
-function adminAuth(req, res, next) {
+function normalizeMac(mac) {
+  return String(mac || '').trim().toLowerCase().replace(/-/g, ':');
+}
+
+function getSessionToken(req) {
   let token = null;
   if (req.headers.cookie) {
     const cookies = req.headers.cookie.split(';').reduce((acc, c) => {
@@ -31,10 +37,17 @@ function adminAuth(req, res, next) {
   if (!token) {
     token = req.get('x-admin-token');
   }
+  return token;
+}
+
+// Middleware to authenticate admin requests using a session cookie or header
+function adminAuth(req, res, next) {
+  const token = getSessionToken(req);
 
   if (!token || !adminSessions.has(token)) {
     return res.status(401).json({ success: false, error: 'Unauthorized' });
   }
+  req.adminUsername = adminSessions.get(token) || config.admin.username;
   next();
 }
 
@@ -57,6 +70,7 @@ const FRESH_DATA_THRESHOLD_MS = 2000;
 const cache = {
   devices: null,
   clients: null,
+  rogueAps: null,
   lastFetch: 0
 };
 
@@ -123,22 +137,60 @@ async function getFreshData(bypassCache = false) {
   const now = Date.now();
   const cacheAge = now - cache.lastFetch;
 
-  if (!bypassCache && cache.devices && cache.clients && cacheAge < config.server.cacheExpiryMs) {
+  if (!bypassCache && cache.devices && cache.clients && cache.rogueAps && cacheAge < config.server.cacheExpiryMs) {
     console.log(`[Cache] Serving data from cache (age: ${Math.round(cacheAge / 1000)}s)`);
-    return { devices: cache.devices, clients: cache.clients };
+    return { devices: cache.devices, clients: cache.clients, rogueAps: cache.rogueAps };
   }
 
   console.log('[UniFi] Fetching fresh network data from controller...');
-  const [devices, clients] = await Promise.all([
+  const [devices, clients, rogueAps] = await Promise.all([
     unifiClient.getDevices(),
-    unifiClient.getClients()
+    unifiClient.getClients(),
+    unifiClient.getRogueAps()
   ]);
 
   cache.devices = devices;
   cache.clients = clients;
+  cache.rogueAps = rogueAps;
   cache.lastFetch = now;
 
-  return { devices, clients };
+  return { devices, clients, rogueAps };
+}
+
+function buildProvisioningState(apsModel) {
+  const now = Date.now();
+  const currentByMac = new Map((apsModel || []).map((ap) => [normalizeMac(ap.mac), ap]));
+  const state = {};
+
+  for (const [key, value] of provisioningUpdates.entries()) {
+    if (now - value.startedAt > PROVISIONING_TTL_MS) {
+      provisioningUpdates.delete(key);
+      continue;
+    }
+
+    const ap = currentByMac.get(normalizeMac(value.apMac));
+    const radioState = ap && ap.radios ? ap.radios[value.radio] : null;
+    const channelApplied = value.expectedChannel === undefined || (radioState && radioState.channel === value.expectedChannel);
+    const txPowerApplied = value.expectedTxPower === undefined || (radioState && radioState.tx_power === value.expectedTxPower);
+
+    if (channelApplied && txPowerApplied) {
+      provisioningUpdates.delete(key);
+      continue;
+    }
+
+    state[key] = {
+      apMac: value.apMac,
+      apName: value.apName,
+      radio: value.radio,
+      startedAt: value.startedAt,
+      expectedChannel: value.expectedChannel,
+      expectedTxPower: value.expectedTxPower,
+      currentChannel: radioState ? radioState.channel : null,
+      currentTxPower: radioState ? radioState.tx_power : null
+    };
+  }
+
+  return state;
 }
 
 /**
@@ -180,13 +232,15 @@ app.get('/api/health', async (req, res) => {
 app.get('/api/diagnostics', async (req, res) => {
   try {
     const force = req.query.force === 'true';
-    const { devices, clients } = await getFreshData(force);
+    const { devices, clients, rogueAps } = await getFreshData(force);
 
     console.log(`[Analyzer] Processing stats for ${devices.length} devices and ${clients.length} clients...`);
     
     const channelAnalysis = analyzer.analyzeChannels(devices);
     const clientAnalysis = analyzer.analyzeClients(clients, devices);
+    const interferenceAnalysis = analyzer.analyzeInterference(rogueAps, devices);
     const apsModel = buildApsModel(channelAnalysis);
+    const provisioningState = buildProvisioningState(apsModel);
 
     // Only push to history when data is fresh from the controller (not served from cache)
     if (Date.now() - cache.lastFetch < FRESH_DATA_THRESHOLD_MS) {
@@ -199,7 +253,9 @@ app.get('/api/diagnostics', async (req, res) => {
       cacheAgeMs: Date.now() - cache.lastFetch,
       aps: apsModel,
       channels: channelAnalysis,
-      clients: clientAnalysis
+      clients: clientAnalysis,
+      interference: interferenceAnalysis,
+      provisioning: provisioningState
     });
   } catch (err) {
     console.error('[API Error] Diagnostics compilation failed:', err);
@@ -253,7 +309,7 @@ app.post('/api/auth/login', (req, res) => {
 
   if (username === config.admin.username && password === config.admin.password) {
     const token = Math.random().toString(36).substring(2) + Date.now().toString(36);
-    adminSessions.add(token);
+    adminSessions.set(token, username);
     res.setHeader('Set-Cookie', `admin_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800`); // 8 hours
     return res.json({ success: true, token });
   }
@@ -265,20 +321,7 @@ app.post('/api/auth/login', (req, res) => {
  * API: Admin logout
  */
 app.post('/api/auth/logout', (req, res) => {
-  let token = null;
-  if (req.headers.cookie) {
-    const cookies = req.headers.cookie.split(';').reduce((acc, c) => {
-      const parts = c.trim().split('=');
-      if (parts.length >= 2) {
-        acc[parts[0]] = parts.slice(1).join('=');
-      }
-      return acc;
-    }, {});
-    token = cookies.admin_session;
-  }
-  if (!token) {
-    token = req.get('x-admin-token');
-  }
+  const token = getSessionToken(req);
 
   if (token) {
     adminSessions.delete(token);
@@ -292,34 +335,38 @@ app.post('/api/auth/logout', (req, res) => {
  * API: Check admin auth status
  */
 app.get('/api/auth/status', (req, res) => {
-  let token = null;
-  if (req.headers.cookie) {
-    const cookies = req.headers.cookie.split(';').reduce((acc, c) => {
-      const parts = c.trim().split('=');
-      if (parts.length >= 2) {
-        acc[parts[0]] = parts.slice(1).join('=');
-      }
-      return acc;
-    }, {});
-    token = cookies.admin_session;
-  }
-  if (!token) {
-    token = req.get('x-admin-token');
-  }
+  const token = getSessionToken(req);
 
   const authenticated = !!(token && adminSessions.has(token));
-  return res.json({ success: true, authenticated });
+  return res.json({
+    success: true,
+    authenticated,
+    username: authenticated ? adminSessions.get(token) : null
+  });
 });
 
 /**
- * API: Admin channel change - strictly restricted to channel updates
+ * API: Get admin audit log
+ */
+app.get('/api/admin/audit-log', adminAuth, async (req, res) => {
+  try {
+    const entries = await auditLogStore.readAll();
+    return res.json({ success: true, entries });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: 'Failed to load audit log', details: err.message });
+  }
+});
+
+/**
+ * API: Admin radio change - restricted to channel and TX power updates
  */
 app.post('/api/admin/change-channel', adminAuth, async (req, res) => {
-  const { apMac, radio, channel } = req.body || {};
+  const { apMac, radio } = req.body || {};
+  const rawChannel = req.body ? req.body.channel : undefined;
+  const rawTxPower = req.body ? (req.body.tx_power ?? req.body.txPower) : undefined;
 
-  // Strict validation: only channel change is allowed
-  if (!apMac || !radio || channel === undefined) {
-    return res.status(400).json({ success: false, error: 'apMac, radio, and channel are required' });
+  if (!apMac || !radio || (rawChannel === undefined && rawTxPower === undefined)) {
+    return res.status(400).json({ success: false, error: 'apMac, radio, and at least one of channel or tx_power are required' });
   }
 
   const macRegex = /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/;
@@ -331,16 +378,70 @@ app.post('/api/admin/change-channel', adminAuth, async (req, res) => {
     return res.status(400).json({ success: false, error: 'Radio must be "ng" (2.4GHz) or "na" (5GHz)' });
   }
 
-  const channelNum = parseInt(channel, 10);
-  if (isNaN(channelNum) || channelNum <= 0) {
+  const channelNum = rawChannel === undefined ? undefined : parseInt(rawChannel, 10);
+  if (rawChannel !== undefined && (isNaN(channelNum) || channelNum <= 0)) {
     return res.status(400).json({ success: false, error: 'Channel must be a valid positive integer' });
   }
 
+  const txPowerNum = rawTxPower === undefined ? undefined : parseInt(rawTxPower, 10);
+  if (rawTxPower !== undefined && (isNaN(txPowerNum) || txPowerNum < 1 || txPowerNum > 30)) {
+    return res.status(400).json({ success: false, error: 'tx_power must be an integer between 1 and 30 dBm' });
+  }
+
+  let auditEntry = {
+    timestamp: new Date().toISOString(),
+    username: req.adminUsername || config.admin.username,
+    apMac: normalizeMac(apMac),
+    apName: null,
+    radio,
+    oldChannel: null,
+    newChannel: channelNum ?? null,
+    oldTxPower: null,
+    newTxPower: txPowerNum ?? null,
+    status: 'failed'
+  };
+
   try {
-    const result = await unifiClient.setApChannel(apMac, radio, channelNum);
-    console.log(`[Admin API] Successfully updated AP ${apMac} radio ${radio} to channel ${channelNum}`);
-    return res.json({ success: true, message: `Channel successfully updated to ${channelNum}`, result });
+    const devices = await unifiClient.getDevices();
+    const ap = devices.find((device) => normalizeMac(device.mac) === normalizeMac(apMac));
+    if (!ap) {
+      throw new Error(`Access Point with MAC ${apMac} not found.`);
+    }
+
+    const radioState = (ap.radio_table || []).find((item) => item.radio === radio) || {};
+    const statsState = (ap.radio_table_stats || []).find((item) => item.radio === radio) || {};
+    auditEntry.apName = ap.name || ap.hostname || ap.mac;
+    auditEntry.oldChannel = statsState.channel ?? null;
+    auditEntry.oldTxPower = statsState.tx_power ?? radioState.tx_power ?? null;
+
+    const result = await unifiClient.setApRadioSettings(apMac, radio, {
+      channel: channelNum,
+      txPower: txPowerNum
+    });
+
+    provisioningUpdates.set(`${normalizeMac(apMac)}:${radio}`, {
+      apMac: normalizeMac(apMac),
+      apName: auditEntry.apName,
+      radio,
+      startedAt: Date.now(),
+      expectedChannel: channelNum,
+      expectedTxPower: txPowerNum
+    });
+
+    cache.lastFetch = 0;
+    auditEntry.status = 'success';
+    await auditLogStore.append(auditEntry);
+
+    console.log(`[Admin API] Successfully updated AP ${apMac} radio ${radio}${channelNum !== undefined ? ` to channel ${channelNum}` : ''}${txPowerNum !== undefined ? ` tx power ${txPowerNum} dBm` : ''}`);
+    return res.json({
+      success: true,
+      message: 'Radio settings successfully updated',
+      result
+    });
   } catch (err) {
+    auditEntry.status = 'failed';
+    auditEntry.error = err.message;
+    await auditLogStore.append(auditEntry);
     console.error(`[Admin API] Channel change failed for AP ${apMac}:`, err.message);
     return res.status(500).json({ success: false, error: err.message });
   }

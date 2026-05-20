@@ -68,6 +68,10 @@
           <i data-lucide="trending-up"></i>
           <span>History &amp; Trends</span>
         </button>
+        <button class="nav-btn" id="btn-admin" onclick="switchTab('admin')">
+          <i data-lucide="shield-check"></i>
+          <span>Admin Console</span>
+        </button>
         <button class="nav-btn" id="btn-optimizer" onclick="switchTab('optimizer')">
           <i data-lucide="zap"></i>
           <span>Optimization Plan</span>
@@ -544,6 +548,44 @@
             </table>
           </div>
         </div>
+
+        <div class="glass-card mt-4">
+          <div class="card-header flex-header">
+            <h3>Rogue AP &amp; Interference Analysis</h3>
+            <span class="count-badge" id="rogue-ap-count-label">0 interferers detected</span>
+          </div>
+          <div class="card-body">
+            <div class="metrics-mini-grid mb-4">
+              <div class="glass-card mini-card bg-warning-alpha">
+                <h4>2.4 GHz Overlaps</h4>
+                <h3 id="rogue-overlap-24">0</h3>
+              </div>
+              <div class="glass-card mini-card bg-blue-alpha">
+                <h4>5 GHz Overlaps</h4>
+                <h3 id="rogue-overlap-5">0</h3>
+              </div>
+              <div class="glass-card mini-card bg-rose-alpha">
+                <h4>Strongest Neighbor</h4>
+                <h3 id="rogue-strongest-signal">--</h3>
+              </div>
+            </div>
+            <div class="analysis-note" id="rogue-analysis-note"></div>
+            <div class="overflow-x mt-4">
+              <table class="premium-table">
+                <thead>
+                  <tr>
+                    <th>Neighbor SSID</th>
+                    <th>Band / Channel</th>
+                    <th>Signal</th>
+                    <th>Overlap with School APs</th>
+                    <th>Impact</th>
+                  </tr>
+                </thead>
+                <tbody id="rogue-ap-table-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       </section>
       
       <!-- TAB 3: ACCESS POINTS -->
@@ -590,6 +632,86 @@
                 <!-- Loaded dynamically -->
               </tbody>
             </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-content" id="tab-admin">
+        <div class="glass-card mb-4">
+          <div class="card-body admin-subtab-bar">
+            <button class="btn-subtle admin-subtab-btn active" id="admin-subtab-actions" onclick="switchAdminSubTab('actions')">Action Center</button>
+            <button class="btn-subtle admin-subtab-btn" id="admin-subtab-audit" onclick="switchAdminSubTab('audit')">Audit Log</button>
+          </div>
+        </div>
+
+        <div id="admin-subtab-pane-actions" class="admin-subtab-pane active">
+          <div class="metrics-mini-grid mb-4">
+            <div class="glass-card mini-card bg-blue-alpha">
+              <h4>Admin Status</h4>
+              <h3 id="admin-status-label">Locked</h3>
+            </div>
+            <div class="glass-card mini-card bg-warning-alpha">
+              <h4>Provisioning Queue</h4>
+              <h3 id="admin-provisioning-count">0</h3>
+            </div>
+            <div class="glass-card mini-card bg-teal-alpha">
+              <h4>Last Audit Entries</h4>
+              <h3 id="admin-audit-count">0</h3>
+            </div>
+          </div>
+
+          <div class="glass-card">
+            <div class="card-header">
+              <h3>Pending Provisioning</h3>
+            </div>
+            <div class="card-body">
+              <div class="analysis-note" id="admin-provisioning-note"></div>
+              <div class="overflow-x mt-4">
+                <table class="premium-table">
+                  <thead>
+                    <tr>
+                      <th>Access Point</th>
+                      <th>Radio</th>
+                      <th>Expected Channel</th>
+                      <th>Expected TX Power</th>
+                      <th>Current State</th>
+                      <th>Started</th>
+                    </tr>
+                  </thead>
+                  <tbody id="admin-provisioning-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="admin-subtab-pane-audit" class="admin-subtab-pane">
+          <div class="glass-card">
+            <div class="card-header flex-header">
+              <h3>Administrative Audit Log</h3>
+              <button class="btn-subtle" onclick="fetchAuditLog(true)">
+                <i data-lucide="refresh-cw"></i> Refresh Audit Log
+              </button>
+            </div>
+            <div class="card-body">
+              <div class="analysis-note" id="admin-audit-note"></div>
+              <div class="overflow-x mt-4">
+                <table class="premium-table">
+                  <thead>
+                    <tr>
+                      <th>Timestamp</th>
+                      <th>User</th>
+                      <th>Access Point</th>
+                      <th>Radio</th>
+                      <th>Channel</th>
+                      <th>TX Power</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody id="admin-audit-body"></tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </div>
       </section>

@@ -1,6 +1,19 @@
 const https = require('https');
 const config = require('../config');
 
+function normalizeMac(mac) {
+  return String(mac || '')
+    .trim()
+    .toLowerCase()
+    .replace(/-/g, ':');
+}
+
+function inferTxPowerMode(txPower) {
+  if (txPower <= 10) return 'low';
+  if (txPower <= 18) return 'medium';
+  return 'high';
+}
+
 class UnifiClient {
   constructor() {
     this.host = config.unifi.host;
@@ -162,6 +175,22 @@ class UnifiClient {
   }
 
   /**
+   * Fetch nearby rogue / neighboring AP telemetry for interference analysis.
+   */
+  async getRogueAps() {
+    if (process.env.MOCK_MODE === 'true') {
+      console.log('[UniFi Mock] Serving simulated rogue AP scan results...');
+      return MOCK_ROGUE_APS;
+    }
+    try {
+      return await this._getWithRetry(`/api/s/${this.site}/stat/rogueap`);
+    } catch (err) {
+      console.warn(`[UniFi Connection Failed] Using simulated rogue AP data instead: ${err.message}`);
+      return MOCK_ROGUE_APS;
+    }
+  }
+
+  /**
    * Helper to perform an authenticated PUT request, with automatic login retry if needed.
    * @param {string} path - API endpoint path
    * @param {Object} payload - JSON body
@@ -201,21 +230,38 @@ class UnifiClient {
   async updateDeviceSettings(deviceId, settings) {
     if (process.env.MOCK_MODE === 'true') {
       console.log(`[UniFi Mock] Simulating updating device ${deviceId} settings:`, JSON.stringify(settings));
-      return [{ _id: deviceId, ...settings }];
+      const device = MOCK_DEVICES.find((item) => item._id === deviceId);
+      if (!device) {
+        throw new Error(`Mock device ${deviceId} not found.`);
+      }
+
+      Object.assign(device, JSON.parse(JSON.stringify(settings)));
+
+      if (Array.isArray(settings.radio_table)) {
+        device.radio_table = JSON.parse(JSON.stringify(settings.radio_table));
+        const statsByRadio = new Map((device.radio_table_stats || []).map((item) => [item.radio, item]));
+        device.radio_table.forEach((radioSetting) => {
+          const stats = statsByRadio.get(radioSetting.radio);
+          if (!stats) return;
+          if (radioSetting.channel !== undefined) stats.channel = radioSetting.channel;
+          if (radioSetting.tx_power !== undefined) stats.tx_power = radioSetting.tx_power;
+        });
+      }
+
+      return [JSON.parse(JSON.stringify(device))];
     }
     return await this._putWithRetry(`/api/s/${this.site}/rest/device/${deviceId}`, settings);
   }
 
   /**
-   * Update the channel for a specific AP's radio.
+   * Update the channel and/or transmit power for a specific AP radio.
    * @param {string} apMac - MAC address of the target AP
    * @param {string} radio - Radio band name ('ng' or 'na')
-   * @param {number} channel - New channel to set
+   * @param {{channel?: number, txPower?: number}} changes - Radio settings to update
    */
-  async setApChannel(apMac, radio, channel) {
-    // 1. Fetch current devices to locate the AP and its internal ID
+  async setApRadioSettings(apMac, radio, changes = {}) {
     const devices = await this.getDevices();
-    const ap = devices.find(d => d.mac === apMac);
+    const ap = devices.find((d) => normalizeMac(d.mac) === normalizeMac(apMac));
     if (!ap) {
       throw new Error(`Access Point with MAC ${apMac} not found.`);
     }
@@ -232,21 +278,35 @@ class UnifiClient {
       throw new Error(`Radio band "${radio}" not found on AP ${apMac}`);
     }
 
-    // Update channel
-    radioTable[rIndex].channel = parseInt(channel, 10);
+    if (changes.channel !== undefined) {
+      radioTable[rIndex].channel = parseInt(changes.channel, 10);
+    }
 
-    // 3. Send update payload to UniFi controller
+    if (changes.txPower !== undefined) {
+      const txPower = parseInt(changes.txPower, 10);
+      radioTable[rIndex].tx_power = txPower;
+      radioTable[rIndex].tx_power_mode = inferTxPowerMode(txPower);
+    }
+
     const payload = {
       radio_table: radioTable
     };
 
     return await this.updateDeviceSettings(deviceId, payload);
   }
+
+  /**
+   * Backward-compatible helper for channel-only updates.
+   */
+  async setApChannel(apMac, radio, channel) {
+    return await this.setApRadioSettings(apMac, radio, { channel });
+  }
 }
 
 
 const MOCK_DEVICES = buildMockDevices(12);
 const MOCK_CLIENTS = buildMockClients(MOCK_DEVICES, 60);
+const MOCK_ROGUE_APS = buildMockRogueAps();
 
 function buildMockDevices(count) {
   const devices = [];
@@ -311,6 +371,16 @@ function buildMockClients(devices, count) {
   }
 
   return clients;
+}
+
+function buildMockRogueAps() {
+  return [
+    { ap: 'Neighbour-House-2G', channel: 6, signal: -51, radio: 'ng', bssid: '08:aa:bb:00:00:01' },
+    { ap: 'Printer-Setup', channel: 11, signal: -67, radio: 'ng', bssid: '08:aa:bb:00:00:02' },
+    { ap: 'OfficeMesh-5G', channel: 44, signal: -58, radio: 'na', bssid: '08:aa:bb:00:00:03' },
+    { ap: 'Apartment-DFS', channel: 100, signal: -64, radio: 'na', bssid: '08:aa:bb:00:00:04' },
+    { ap: 'Hallway-Repeater', channel: 40, signal: -49, radio: 'na', bssid: '08:aa:bb:00:00:05' }
+  ];
 }
 
 // Export a single instance to share the session cookie across the application

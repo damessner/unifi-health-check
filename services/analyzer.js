@@ -366,6 +366,69 @@ class NetworkAnalyzer {
       strugglingAll
     };
   }
+
+  /**
+   * Summarize nearby rogue / neighboring AP telemetry to explain interference hotspots.
+   * @param {Array} rogueAps
+   * @param {Array} devices
+   */
+  analyzeInterference(rogueAps, devices) {
+    const localChannelMap24 = {};
+    const localChannelMap5 = {};
+
+    (devices || []).forEach((device) => {
+      if (!Array.isArray(device.radio_table_stats)) return;
+      device.radio_table_stats.forEach((radio) => {
+        const channel = parseInt(radio.channel, 10);
+        if (!channel) return;
+        if (channel <= 14) {
+          localChannelMap24[channel] = (localChannelMap24[channel] || 0) + 1;
+        } else {
+          localChannelMap5[channel] = (localChannelMap5[channel] || 0) + 1;
+        }
+      });
+    });
+
+    const normalized = (rogueAps || []).map((item, index) => {
+      const channel = parseInt(item.channel || item.chan, 10) || 0;
+      const signal = item.signal !== undefined ? item.signal : (item.rssi !== undefined ? item.rssi : -100);
+      const band = channel > 14 ? '5GHz' : '2.4GHz';
+      const localCount = band === '2.4GHz'
+        ? (localChannelMap24[channel] || 0)
+        : (localChannelMap5[channel] || 0);
+
+      return {
+        id: item.bssid || item.mac || `rogue-${index}`,
+        ssid: item.ap || item.ssid || item.essid || 'Hidden SSID',
+        channel,
+        band,
+        signal,
+        localOverlapCount: localCount,
+        impact: signal >= -60 && localCount > 0 ? 'high' : (localCount > 0 ? 'medium' : 'low')
+      };
+    }).filter((item) => item.channel > 0);
+
+    const summary = {
+      totalDetected: normalized.length,
+      overlapping24: normalized.filter((item) => item.band === '2.4GHz' && item.localOverlapCount > 0).length,
+      overlapping5: normalized.filter((item) => item.band === '5GHz' && item.localOverlapCount > 0).length,
+      strongestSignal: normalized.length > 0 ? Math.max(...normalized.map((item) => item.signal)) : null
+    };
+
+    const recommendations = [];
+    if (summary.overlapping24 > 0) {
+      recommendations.push('External 2.4 GHz networks overlap your classroom cells. Keep 2.4 GHz power low and stay on channels 1, 6, and 11 only.');
+    }
+    if (summary.overlapping5 > 0) {
+      recommendations.push('Nearby 5 GHz neighbors are visible on active school channels. Prefer wider DFS reuse instead of stacking radios on 40/44.');
+    }
+
+    return {
+      summary,
+      networks: normalized.sort((a, b) => b.signal - a.signal),
+      recommendations
+    };
+  }
 }
 
 module.exports = new NetworkAnalyzer();

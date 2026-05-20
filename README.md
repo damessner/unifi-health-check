@@ -106,6 +106,8 @@ The application is configured using a `.env` file located in the root of the pro
 | `CACHE_EXPIRY_SEC` | `15` | Caching duration (in seconds) of controller data to limit load. |
 | `API_TOKEN` | _(empty)_ | Optional API protection token; when set, send it in `x-api-token` header for all `/api/*` calls. |
 | `UNIFI_ALLOW_SELF_SIGNED` | `false` | Keep `false` for production; only set `true` if you intentionally trust a self-signed controller certificate. |
+| `ADMIN_USER` | `admin` | Username required for authenticated AP channel / TX power changes and audit log access. |
+| `ADMIN_PASS` | `admin` | Password for the built-in admin console. Change this before exposing the dashboard. |
 
 ---
 
@@ -138,6 +140,9 @@ The internal Node.js server exposes these diagnostic endpoints:
 - **`GET /api/health`**: Tests connection status to the UniFi controller and verifies credentials.
 - **`GET /api/diagnostics`**: Compiles AP radio congestion, active clients, and Apple device metrics. Use `?force=true` to bypass cache.
 - **`GET /api/history`**: Returns the ring-buffered timeline trends (up to 60 snapshot samples).
+- **`POST /api/auth/login` / `POST /api/auth/logout` / `GET /api/auth/status`**: Admin authentication flow for controlled change actions.
+- **`POST /api/admin/change-channel`**: Applies a channel change and/or `tx_power` update to a specific AP radio.
+- **`GET /api/admin/audit-log`**: Returns the persisted administrative audit trail from `data/audit.json`.
 
 If `API_TOKEN` is configured, include `x-api-token: <token>` for all `/api/*` requests.
 
@@ -163,7 +168,8 @@ This project is open-source and licensed under the [MIT License](LICENSE).
 Current implementation integrity (verified in this repository):
 
 - ✅ Implemented today: real-time diagnostics API, RF/channel analyzer, iPad/Apple client diagnostics, optimization guidance UI, in-memory history ring buffer, speed/capacity widgets.
+- ✅ Implemented today: admin AP channel/TX power actions, optimistic provisioning badges, persisted audit log, and rogue AP interference analysis.
 - ⚠️ Partially implemented: optimizer/sandbox simulation UX (no backend graph-coloring solver yet).
-- ❌ Not implemented yet: webhook/email alerting, sticky-client roaming diagnostics, classroom SLA grouping, safe write-back controller actions, airtime fairness auditor, DHCP pool exhaustion predictor, SQLite persistent time-series, rogue AP radar, teacher portal/reporting endpoint.
+- ❌ Not implemented yet: webhook/email alerting, scheduled maintenance auto-apply, classroom SLA grouping, airtime fairness auditor, DHCP pool exhaustion predictor, SQLite persistent time-series.
 
 Planned advanced extensions are documented in **`/STRATEGIC_ROADMAP.md`**.
