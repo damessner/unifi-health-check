@@ -523,15 +523,15 @@
             <table class="premium-table">
               <thead>
                 <tr>
-                  <th>Access Point Name</th>
-                  <th>IP Address</th>
-                  <th>Radio</th>
-                  <th>Channel</th>
-                  <th>Channel Load (%)</th>
-                  <th>TX Retry %</th>
-                  <th>Active Clients</th>
-                  <th>CCI Co-channel Count</th>
-                  <th>Status</th>
+                  <th onclick="sortCloggedRadios('apName')" style="cursor: pointer; user-select: none;">Access Point Name <span id="th-sort-apName" class="sort-indicator" style="opacity: 0.3;">↕</span></th>
+                  <th onclick="sortCloggedRadios('ip')" style="cursor: pointer; user-select: none;">IP Address <span id="th-sort-ip" class="sort-indicator" style="opacity: 0.3;">↕</span></th>
+                  <th onclick="sortCloggedRadios('model')" style="cursor: pointer; user-select: none;">Radio <span id="th-sort-model" class="sort-indicator" style="opacity: 0.3;">↕</span></th>
+                  <th onclick="sortCloggedRadios('channel')" style="cursor: pointer; user-select: none;">Channel <span id="th-sort-channel" class="sort-indicator" style="opacity: 0.3;">↕</span></th>
+                  <th onclick="sortCloggedRadios('cu_total')" style="cursor: pointer; user-select: none;">Channel Load (%) <span id="th-sort-cu_total" class="sort-indicator" style="opacity: 1;">↓</span></th>
+                  <th onclick="sortCloggedRadios('tx_retries_pct')" style="cursor: pointer; user-select: none;">TX Retry % <span id="th-sort-tx_retries_pct" class="sort-indicator" style="opacity: 0.3;">↕</span></th>
+                  <th onclick="sortCloggedRadios('num_sta')" style="cursor: pointer; user-select: none;">Active Clients <span id="th-sort-num_sta" class="sort-indicator" style="opacity: 0.3;">↕</span></th>
+                  <th onclick="sortCloggedRadios('cci_count')" style="cursor: pointer; user-select: none;">CCI Co-channel Count <span id="th-sort-cci_count" class="sort-indicator" style="opacity: 0.3;">↕</span></th>
+                  <th onclick="sortCloggedRadios('health')" style="cursor: pointer; user-select: none;">Status <span id="th-sort-health" class="sort-indicator" style="opacity: 0.3;">↕</span></th>
                 </tr>
               </thead>
               <tbody id="channels-table-body">

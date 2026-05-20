@@ -177,7 +177,20 @@ function buildChannelSheet(wb, activeRadios, plan, summary) {
   ws.getRow(3).height = 22;
   ws.views = [{ state: 'frozen', xSplit: 0, ySplit: 3 }];
 
-  activeRadios.forEach((r, idx) => {
+  // Sort radios: changes first (ordered by impact DESC), then non-changes (ordered by impact DESC)
+  const sortedRadios = [...activeRadios].sort((a, b) => {
+    const keyA = `${a.apMac}_${a.radio}`;
+    const keyB = `${b.apMac}_${b.radio}`;
+    const changeA = (plan[keyA] || {}).changeNeeded ? 1 : 0;
+    const changeB = (plan[keyB] || {}).changeNeeded ? 1 : 0;
+
+    if (changeA !== changeB) {
+      return changeB - changeA;
+    }
+    return b._impact - a._impact;
+  });
+
+  sortedRadios.forEach((r, idx) => {
     const key = `${r.apMac}_${r.radio}`;
     const opt = plan[key] || {};
     const row = ws.getRow(idx + 4);

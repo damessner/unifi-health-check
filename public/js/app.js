@@ -537,6 +537,23 @@ function renderOverview() {
   }
 }
 
+// Global sort state for clogged radios table
+let cloggedRadiosSortKey = 'cu_total';
+let cloggedRadiosSortDesc = true;
+
+/**
+ * Handle header click events to toggle sorting in Clogged Radios table
+ */
+function sortCloggedRadios(key) {
+  if (cloggedRadiosSortKey === key) {
+    cloggedRadiosSortDesc = !cloggedRadiosSortDesc;
+  } else {
+    cloggedRadiosSortKey = key;
+    cloggedRadiosSortDesc = (key === 'apName' || key === 'ip' || key === 'model') ? false : true;
+  }
+  renderChannelsTab();
+}
+
 /**
  * Render Channel Analyzer tab
  */
@@ -593,6 +610,21 @@ function renderChannelsTab() {
     }
   }
 
+  // Update header sort indicators in the DOM
+  const sortKeys = ['apName', 'ip', 'model', 'channel', 'cu_total', 'tx_retries_pct', 'num_sta', 'cci_count', 'health'];
+  sortKeys.forEach(k => {
+    const el = document.getElementById(`th-sort-${k}`);
+    if (el) {
+      if (k === cloggedRadiosSortKey) {
+        el.innerHTML = cloggedRadiosSortDesc ? '↓' : '↑';
+        el.style.opacity = '1';
+      } else {
+        el.innerHTML = '↕';
+        el.style.opacity = '0.3';
+      }
+    }
+  });
+
   // 3. Populate Clogged Radios Table (`#channels-table-body`)
   const tableBody = document.getElementById('channels-table-body');
   const countLabel = document.getElementById('congested-radios-count');
@@ -600,9 +632,36 @@ function renderChannelsTab() {
   if (tableBody) {
     tableBody.innerHTML = '';
     
-    // Sort all AP radios with critical/warning issues first
-    const items = apiData.channels.radios;
-    const countFlagged = items.filter(r => r.health !== 'healthy').length;
+    // Sort cloned AP radios according to user preferences
+    const items = [...apiData.channels.radios];
+    items.sort((a, b) => {
+      let valA = a[cloggedRadiosSortKey];
+      let valB = b[cloggedRadiosSortKey];
+
+      if (cloggedRadiosSortKey === 'channel') {
+        valA = a.channel || 0;
+        valB = b.channel || 0;
+      } else if (cloggedRadiosSortKey === 'health') {
+        const healthSeverity = { critical: 3, warning: 2, healthy: 1 };
+        valA = healthSeverity[a.health] || 0;
+        valB = healthSeverity[b.health] || 0;
+      }
+
+      if (valA === undefined || valA === null) return cloggedRadiosSortDesc ? 1 : -1;
+      if (valB === undefined || valB === null) return cloggedRadiosSortDesc ? -1 : 1;
+
+      if (typeof valA === 'string') {
+        return cloggedRadiosSortDesc 
+          ? valB.localeCompare(valA)
+          : valA.localeCompare(valB);
+      } else {
+        return cloggedRadiosSortDesc 
+          ? valB - valA 
+          : valA - valB;
+      }
+    });
+
+    const countFlagged = apiData.channels.radios.filter(r => r.health !== 'healthy').length;
     if (countLabel) countLabel.textContent = `${countFlagged} radios flagged with issues`;
 
     items.forEach(r => {
@@ -2073,6 +2132,44 @@ function exportClientsCSV() {
   link.download = `unifi-clients-${new Date().toISOString().slice(0, 19).replace(/[:]/g, '-')}.csv`;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+/**
+ * Export channel optimization and client diagnostics report as an XLSX file download
+ */
+async function exportXlsx() {
+  const btn = document.getElementById('export-xlsx-button');
+  if (btn) {
+    btn.disabled = true;
+    const icon = btn.querySelector('i');
+    if (icon) icon.style.animation = 'spin 1s infinite linear';
+  }
+
+  try {
+    showToast('Generating XLSX optimization report. Please wait...', 'info');
+    const res = await fetch('/api/export/xlsx');
+    if (!res.ok) throw new Error(`HTTP status error: ${res.status}`);
+    
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    
+    const ts = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
+    link.download = `unifi_optimization_${ts}.xlsx`;
+    link.click();
+    URL.revokeObjectURL(url);
+    showToast('XLSX report downloaded successfully!', 'success');
+  } catch (err) {
+    console.error('[Export] Failed to export XLSX:', err);
+    showToast('Failed to generate and download XLSX report.', 'critical');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      const icon = btn.querySelector('i');
+      if (icon) icon.style.animation = 'none';
+    }
+  }
 }
 
 // ============================================================
