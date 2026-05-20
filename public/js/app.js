@@ -1536,7 +1536,7 @@ function renderOptimalGrid() {
     const isCh24Drift = r24 && curCh24 !== optCh24;
     const isCh5Drift = r5 && curCh5 !== optCh5;
     const isPower24Drift = r24 && (r24.tx_power_mode === 'auto' || (curPower24 !== null && curPower24 > 10));
-    const isPower5Drift = r5 && (r5.tx_power_mode === 'auto' || (curPower5 !== null && curPower5 > 18));
+    const isPower5Drift = r5 && (r5.tx_power_mode === 'auto' || (curPower5 !== null && curPower5 > OPTIMAL_POWER_5GHZ));
     const isMinRssiDrift = !curMinRssi || curMinRssi !== -75;
 
     const hasDrift = isCh24Drift || isCh5Drift || isPower24Drift || isPower5Drift || isMinRssiDrift;

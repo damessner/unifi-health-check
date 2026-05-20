@@ -375,7 +375,7 @@ function buildMockClients(devices, count) {
 
 function buildMockRogueAps() {
   return [
-    { ap: 'Neighbour-House-2G', channel: 6, signal: -51, radio: 'ng', bssid: '08:aa:bb:00:00:01' },
+    { ap: 'Neighbor-House-2G', channel: 6, signal: -51, radio: 'ng', bssid: '08:aa:bb:00:00:01' },
     { ap: 'Printer-Setup', channel: 11, signal: -67, radio: 'ng', bssid: '08:aa:bb:00:00:02' },
     { ap: 'OfficeMesh-5G', channel: 44, signal: -58, radio: 'na', bssid: '08:aa:bb:00:00:03' },
     { ap: 'Apartment-DFS', channel: 100, signal: -64, radio: 'na', bssid: '08:aa:bb:00:00:04' },
