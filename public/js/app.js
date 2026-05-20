@@ -3224,7 +3224,10 @@ async function applyApChannelChange(e, apMac, radio, channel) {
   const btn = e.currentTarget;
   if (!btn || btn.disabled) return;
   
-  if (!confirm(`Are you sure you want to change AP ${apMac} radio ${radio} to channel ${channel}?`)) {
+  const bandName = radio === 'ng' ? '2.4 GHz' : '5 GHz';
+  const confirmMsg = `Are you sure you want to change AP (${apMac}) on the ${bandName} band to channel ${channel}?\n\n` +
+                     `Warning: This will cause the Access Point to provision and temporarily drop client connections.`;
+  if (!confirm(confirmMsg)) {
     return;
   }
   
@@ -3242,7 +3245,7 @@ async function applyApChannelChange(e, apMac, radio, channel) {
     
     const data = await res.json();
     if (res.ok && data.success) {
-      showToast(`Successfully updated channel to ${channel}!`, 'success');
+      showToast(`Channel change submitted successfully! The AP is provisioning to channel ${channel} (can take up to 60 seconds to reflect in telemetry).`, 'success');
       // Trigger a force-refresh of the diagnostics data
       await fetchData(true, true);
     } else {
