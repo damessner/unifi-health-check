@@ -862,31 +862,97 @@
             <div style="display:flex; align-items:center; gap:8px;">
               <div class="header-icon bg-purple-alpha"><i data-lucide="target"></i></div>
               <h3>Constrained Batch Optimizer</h3>
+              <span class="opt-round-badge" id="opt-round-badge" style="display:none;">Round <strong id="opt-round-num">1</strong></span>
             </div>
-            <div style="display:flex; align-items:center; gap:12px;">
+            <div style="display:flex; align-items:center; gap:10px;">
               <label style="font-size:0.8rem; color:var(--text-muted); display:flex; align-items:center; gap:6px;">
-                Max APs per batch:
+                Max APs:
                 <select id="opt-max-changes" style="background:rgba(255,255,255,0.06); border:1px solid var(--border-glass); color:white; padding:4px 8px; border-radius:6px; font-size:0.8rem;">
-                  <option value="5">5 APs</option>
-                  <option value="8" selected>8 APs</option>
-                  <option value="10">10 APs</option>
-                  <option value="12">12 APs</option>
-                  <option value="15">15 APs</option>
+                  <option value="5">5</option>
+                  <option value="8" selected>8</option>
+                  <option value="10">10</option>
+                  <option value="12">12</option>
+                  <option value="15">15</option>
                 </select>
               </label>
-              <button class="btn-primary" id="btn-run-optimizer" onclick="runBatchOptimizer()" style="background: linear-gradient(135deg, #8B5CF6, #6366F1); padding:8px 16px; border-radius:8px; border:none; color:white; font-weight:600; font-size:0.85rem; cursor:pointer; display:inline-flex; align-items:center; gap:6px;">
+              <button class="btn-batch-primary" id="btn-run-optimizer" onclick="runBatchOptimizer()">
                 <i data-lucide="play" style="width:14px; height:14px;"></i> Run Optimizer
+              </button>
+              <button class="btn-batch-secondary" id="btn-rescan-reopt" onclick="rescanAndReoptimize()" style="display:none;">
+                <i data-lucide="refresh-cw" style="width:14px; height:14px;"></i> Re-scan &amp; Re-optimize
+              </button>
+              <button class="btn-batch-reset" id="btn-reset-opt" onclick="resetOptimizerState()" style="display:none;" title="Reset all optimizer state and history">
+                <i data-lucide="trash-2" style="width:12px; height:12px;"></i>
               </button>
             </div>
           </div>
+
+          <!-- Placeholder before first run -->
+          <div class="card-body" id="batch-optimizer-placeholder">
+            <div class="opt-placeholder-content">
+              <i data-lucide="target" style="width:32px; height:32px; color:var(--text-muted); opacity:0.4; margin-bottom:12px;"></i>
+              <p class="text-muted">
+                Click <strong>Run Optimizer</strong> to compute an AP-level joint-band channel plan.
+                The optimizer selects the worst-performing APs, jointly optimizes both their 2.4 GHz and 5 GHz
+                channels using proximity awareness, and provides before/after improvement estimates.
+              </p>
+              <p class="text-muted" style="font-size:0.78rem;">
+                <i data-lucide="repeat" style="width:12px; height:12px; display:inline-block; vertical-align:middle; margin-right:4px;"></i>
+                Workflow: Run → Apply changes on controller → Re-scan → Re-optimize (repeat until healthy)
+              </p>
+            </div>
+          </div>
+
+          <!-- Results after optimization run -->
           <div class="card-body" id="batch-optimizer-results" style="display:none;">
+            <!-- Cumulative Progress Bar -->
+            <div class="opt-progress-section" id="opt-progress-section" style="display:none;">
+              <div class="opt-progress-header">
+                <span class="opt-progress-label">Remediation Progress</span>
+                <span class="opt-progress-stats" id="opt-progress-stats"></span>
+              </div>
+              <div class="opt-progress-bar-track">
+                <div class="opt-progress-bar-fill" id="opt-progress-bar-fill"></div>
+              </div>
+            </div>
+
+            <!-- Workflow Step Indicator -->
+            <div class="opt-workflow-steps" id="opt-workflow-steps">
+              <div class="opt-step active" id="opt-step-analyze">
+                <span class="opt-step-num">1</span>
+                <span class="opt-step-label">Analyze</span>
+              </div>
+              <div class="opt-step-connector" id="opt-step-conn-1"></div>
+              <div class="opt-step" id="opt-step-apply">
+                <span class="opt-step-num">2</span>
+                <span class="opt-step-label">Apply on Controller</span>
+              </div>
+              <div class="opt-step-connector" id="opt-step-conn-2"></div>
+              <div class="opt-step" id="opt-step-rescan">
+                <span class="opt-step-num">3</span>
+                <span class="opt-step-label">Re-scan</span>
+              </div>
+              <div class="opt-step-connector" id="opt-step-conn-3"></div>
+              <div class="opt-step" id="opt-step-reopt">
+                <span class="opt-step-num">4</span>
+                <span class="opt-step-label">Re-optimize</span>
+              </div>
+            </div>
+
             <div id="batch-optimizer-content"></div>
           </div>
-          <div class="card-body" id="batch-optimizer-placeholder">
-            <p class="text-muted" style="text-align:center; padding:20px;">
-              <i data-lucide="info" style="width:16px; height:16px; display:inline-block; vertical-align:middle; margin-right:6px;"></i>
-              Click "Run Optimizer" to compute an AP-level joint-band channel plan. The optimizer selects the worst-performing APs, jointly optimizes their 2.4GHz and 5GHz channels, and provides before/after improvement estimates. Fix these, re-scan, then run again for the next batch.
-            </p>
+
+          <!-- Batch History Panel -->
+          <div class="card-body" id="batch-history-panel" style="display:none; border-top:1px solid var(--border-glass);">
+            <div class="opt-history-header" onclick="toggleBatchHistory()" style="cursor:pointer;">
+              <div style="display:flex; align-items:center; gap:6px;">
+                <i data-lucide="history" style="width:14px; height:14px; color:var(--text-muted);"></i>
+                <span class="text-muted" style="font-size:0.8rem;">Batch History</span>
+                <span class="count-badge bg-purple-alpha" id="opt-history-count" style="font-size:0.65rem; padding:2px 6px;">0</span>
+              </div>
+              <i data-lucide="chevron-down" id="opt-history-chevron" style="width:14px; height:14px; color:var(--text-muted); transition:transform 0.2s;"></i>
+            </div>
+            <div id="opt-history-list" style="display:none; margin-top:10px;"></div>
           </div>
         </div>
 
@@ -894,8 +960,11 @@
         <div class="glass-card mt-4">
           <div class="card-header flex-header">
             <h3><i data-lucide="grid" style="display:inline-block; vertical-align:middle; width:20px; height:20px; margin-right:8px;"></i>Tailored Optimal Network Channel Grid Blueprint</h3>
-            <div class="header-blueprint-actions no-print" style="display:flex; align-items:center; gap:12px;">
+              <div class="header-blueprint-actions no-print" style="display:flex; align-items:center; gap:12px;">
               <span class="count-badge bg-teal-alpha" style="font-size:0.75rem; font-weight:700; padding:4px 10px; border-radius:20px;" id="opt-drift-label">Checking configuration drift...</span>
+              <button class="btn-select-batch" id="btn-select-batch" onclick="selectAllBatchAPs()" style="display:none;" title="Select all APs in current optimizer batch">
+                <i data-lucide="check-square" style="width:12px; height:12px;"></i> Select Batch
+              </button>
               <button class="btn-print" onclick="window.print()" title="Print optimization blueprint or export to PDF" style="background: linear-gradient(135deg, var(--primary-light), #6366F1); color: white; border: none; padding: 6px 12px; border-radius: 8px; font-size: 0.8rem; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; transition: all 0.2s ease;">
                 <i data-lucide="printer" style="width:14px; height:14px;"></i> <span>Print/PDF Plan</span>
               </button>

@@ -165,8 +165,7 @@ This project is open-source and licensed under the [MIT License](LICENSE).
 
 Current implementation integrity (verified in this repository):
 
-- ✅ Implemented today: real-time diagnostics API, RF/channel analyzer, iPad/Apple client diagnostics, in-memory history ring buffer, speed/capacity widgets, **constrained joint-band batch optimizer** (AP-level, proximity-aware, change-limited), XLSX export with improvement report, batch optimizer UI panel, butterfly-effect sandbox simulator.
-- ⚠️ Partially implemented: optimizer UX polish (batch highlighting in grid, iterative recheck workflow).
+- ✅ Implemented today: real-time diagnostics API, RF/channel analyzer, iPad/Apple client diagnostics, in-memory history ring buffer, speed/capacity widgets, **constrained joint-band batch optimizer** (AP-level, proximity-aware, change-limited), **iterative recheck workflow** (round counter, Re-scan & Re-optimize, batch history in localStorage, cumulative progress bar), XLSX export with improvement report, batch optimizer UX (grid highlighting, channel diff badges, select-all batch, before/after comparison), butterfly-effect sandbox simulator.
 - ❌ Not implemented yet: webhook/email alerting, sticky-client roaming diagnostics, classroom SLA grouping, safe write-back controller actions, airtime fairness auditor, DHCP pool exhaustion predictor, SQLite persistent time-series, rogue AP radar, teacher portal/reporting endpoint.
 
 Planned advanced extensions are documented in **`/STRATEGIC_ROADMAP.md`**.
