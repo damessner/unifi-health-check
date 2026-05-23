@@ -11,6 +11,7 @@ let sandboxOverrides = {};
 let selectedAPMac = null;
 let activeTab = 'overview';
 let isAdmin = false;
+let csrfToken = null;
 let searchQueryParams = {
   ap: '',
   ipad: ''
@@ -327,23 +328,11 @@ async function fetchData(isSilent = false, force = false) {
     }
     
     // Process and render all segments
-    renderOverview();
-    renderSpeedsTab();
-    renderChannelsTab();
-    renderApsTab();
-    renderIpadsTab();
-    updateGlobalBadges();
-    renderOptimalGrid();
-    renderProximityMap();
-    updateEventsLog();
-    // Refresh history charts if history tab is active
-    if (activeTab === 'history') {
-      fetchAndRenderHistory();
-    }
+    renderAllTabs();
 
     // Verify backend connectivity health state
     updateControllerStatusCard(true);
-    
+
     // Set Timestamp
     const lastUpdatedLabel = document.getElementById('last-updated');
     if (lastUpdatedLabel) {
@@ -1840,14 +1829,7 @@ async function rescanAndReoptimize() {
       apiData = JSON.parse(JSON.stringify(rawApiData));
     }
 
-    renderOverview();
-    renderSpeedsTab();
-    renderChannelsTab();
-    renderApsTab();
-    renderIpadsTab();
-    updateGlobalBadges();
-    renderProximityMap();
-    updateEventsLog();
+    renderAllTabs();
 
     showToast('Re-scan complete. Fresh controller telemetry loaded.', 'success');
     setWorkflowStep('rescan', 'done');
@@ -3657,6 +3639,7 @@ async function handleLoginSubmit(e) {
     const data = await res.json();
     if (res.ok && data.success) {
       isAdmin = true;
+      csrfToken = data.csrfToken || null;
       showToast('Admin access unlocked successfully.', 'success');
       closeLoginModal();
       updateAdminUI();
@@ -3682,6 +3665,7 @@ async function handleLogout() {
     const res = await fetch('/api/auth/logout', { method: 'POST' });
     if (res.ok) {
       isAdmin = false;
+      csrfToken = null;
       showToast('Admin session closed.', 'info');
       updateAdminUI();
       renderOptimalGrid(); // Re-render table to remove inline Change buttons
@@ -3740,13 +3724,18 @@ async function applyApChannelChange(e, apMac, radio, channel) {
   btn.classList.add('loading');
   
   try {
-    const res = await fetch('/api/admin/change-channel', {
-      method: 'POST',
-      headers: {
+    const headers = {
         'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ apMac, radio, channel })
-    });
+      };
+      if (csrfToken) {
+        headers['x-csrf-token'] = csrfToken;
+      }
+
+      const res = await fetch('/api/admin/change-channel', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ apMac, radio, channel })
+      });
     
     const data = await res.json();
     if (res.ok && data.success) {

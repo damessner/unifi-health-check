@@ -65,8 +65,9 @@ function channelsOverlap24(ch1, ch2) {
 
 function channelsOverlap5(ch1, bw1, ch2, bw2) {
   if (!Number.isFinite(ch1) || !Number.isFinite(ch2)) return false;
-  const halfSpan1 = (Number(bw1) || 40) / 10;
-  const halfSpan2 = (Number(bw2) || 40) / 10;
+  // Default to 80 MHz for modern APs (was 40 MHz, underestimates overlap)
+  const halfSpan1 = (Number(bw1) || 80) / 10;
+  const halfSpan2 = (Number(bw2) || 80) / 10;
   return Math.abs(ch1 - ch2) <= (halfSpan1 + halfSpan2);
 }
 
@@ -130,8 +131,12 @@ function buildProximityGraph(aps) {
 /**
  * Compute a composite health score for an AP (higher = worse).
  * Considers both radio bands, CCI, retries, neighbor conflicts, and client load.
+ *
+ * @param {Object} ap - AP object with radios
+ * @param {Object} proximityGraph - Pre-built proximity graph
+ * @param {Array} allAPs - Full AP list for neighbor lookups (passed explicitly, no global)
  */
-function scoreAP(ap, proximityGraph) {
+function scoreAP(ap, proximityGraph, allAPs) {
   const r24 = ap.radios && ap.radios.ng;
   const r5 = ap.radios && ap.radios.na;
 
@@ -153,7 +158,7 @@ function scoreAP(ap, proximityGraph) {
   const graphEntry = proximityGraph && proximityGraph[ap.mac];
   if (graphEntry) {
     graphEntry.neighbors.forEach(nMac => {
-      const neighborAP = findAPByMac(nMac);
+      const neighborAP = allAPs.find(a => a.mac === nMac);
       if (!neighborAP) return;
 
       if (r24 && neighborAP.radios && neighborAP.radios.ng &&
@@ -186,20 +191,22 @@ function scoreAP(ap, proximityGraph) {
   };
 }
 
-// Global ref set during optimization for neighbor lookups (avoid circular deps)
-let _allAPs = [];
-
-function findAPByMac(mac) {
-  return _allAPs.find(a => a.mac === mac) || null;
-}
-
 // ── Joint Channel Combo Scoring ──────────────────────────────────────────────
 
 /**
  * Score a (ch24, ch5) combo for a given AP in the current virtual state.
  * Lower score = better.
+ *
+ * @param {Object} ap - AP being scored
+ * @param {number|null} ch24 - Candidate 2.4GHz channel
+ * @param {number|null} ch5 - Candidate 5GHz channel
+ * @param {Object} vLoad24 - Virtual 2.4GHz load map
+ * @param {Object} vLoad5 - Virtual 5GHz load map
+ * @param {Object} proximityGraph - Proximity graph
+ * @param {Object} floorAssignments - Floor-based channel assignment tracker
+ * @param {Array} allAPs - Full AP list for neighbor lookups (passed explicitly)
  */
-function scoreCombo(ap, ch24, ch5, vLoad24, vLoad5, proximityGraph, floorAssignments) {
+function scoreCombo(ap, ch24, ch5, vLoad24, vLoad5, proximityGraph, floorAssignments, allAPs) {
   let score = 0;
   const r24 = ap.radios && ap.radios.ng;
   const r5 = ap.radios && ap.radios.na;
@@ -215,7 +222,7 @@ function scoreCombo(ap, ch24, ch5, vLoad24, vLoad5, proximityGraph, floorAssignm
   // 2. Neighbor conflict penalty: check against all neighbors' (potentially updated) channels
   if (graphEntry) {
     graphEntry.neighbors.forEach(nMac => {
-      const neighbor = findAPByMac(nMac);
+      const neighbor = allAPs.find(a => a.mac === nMac);
       if (!neighbor) return;
 
       const n24 = neighbor.radios && neighbor.radios.ng;
@@ -237,14 +244,13 @@ function scoreCombo(ap, ch24, ch5, vLoad24, vLoad5, proximityGraph, floorAssignm
     });
   }
 
-  // 3. Floor-based separation: prefer different channels on different floors by
-  //    adding a penalty if this channel is heavily used on the SAME floor
+  // 3. Floor-based separation: prefer different channels on different floors
   const floorKey24 = `${floor}_24_${ch24}`;
   const floorKey5 = `${floor}_5_${ch5}`;
   score += (floorAssignments[floorKey24] || 0) * COMBO_PENALTIES.sameFloorSameCh;
   score += (floorAssignments[floorKey5] || 0) * COMBO_PENALTIES.sameFloorSameCh;
 
-  // 4. Stability bonus: prefer keeping current channels (avoids unnecessary changes)
+  // 4. Stability bonus: prefer keeping current channels
   if (r24 && r24.channel === ch24) score -= COMBO_PENALTIES.changeCost;
   if (r5 && r5.channel === ch5) score -= COMBO_PENALTIES.changeCost;
 
@@ -281,7 +287,6 @@ function computeMetrics(radios) {
     else if (cu > 50 || cci > 4) warningCount++;
   });
 
-  // Compute channel distribution variance (lower = more even)
   const vals24 = Object.values(chCounts24);
   const vals5 = Object.values(chCounts5);
   const avg24 = vals24.length ? vals24.reduce((a, b) => a + b, 0) / vals24.length : 0;
@@ -321,10 +326,11 @@ function runConstrainedOptimizer(radios, channelSummary, aps, options = {}) {
   const maxChanges = options.maxChanges || DEFAULT_MAX_CHANGES;
   const minImprovementThreshold = options.minImprovementThreshold || MIN_IMPROVEMENT_THRESHOLD;
 
-  _allAPs = Array.isArray(aps) ? aps : [];
+  // FIX 5: No module-level global — allAPs passed explicitly through every function
+  const allAPs = Array.isArray(aps) ? aps : [];
 
   // Build proximity graph
-  const proximityGraph = buildProximityGraph(_allAPs);
+  const proximityGraph = buildProximityGraph(allAPs);
 
   // Group radios by AP and compute health scores
   const apMap = {};
@@ -343,14 +349,14 @@ function runConstrainedOptimizer(radios, channelSummary, aps, options = {}) {
   });
 
   // Attach floor info from aps if available
-  _allAPs.forEach(ap => {
+  allAPs.forEach(ap => {
     const entry = apMap[ap.mac];
     if (entry && ap.floor) entry.floor = ap.floor;
   });
 
-  // Score each AP
+  // Score each AP — passes allAPs explicitly (no global)
   const apList = Object.values(apMap).map(ap => {
-    const scores = scoreAP(ap, proximityGraph);
+    const scores = scoreAP(ap, proximityGraph, allAPs);
     return { ...ap, ...scores };
   });
 
@@ -366,7 +372,7 @@ function runConstrainedOptimizer(radios, channelSummary, aps, options = {}) {
   // Initialize virtual load maps from current channel counts
   const vLoad24 = Object.assign({}, channelSummary.channelCounts24 || {});
   const vLoad5 = Object.assign({}, channelSummary.channelCounts5 || {});
-  const floorAssignments = {}; // track "floor_band_ch" counts during optimization
+  const floorAssignments = {};
 
   // Run joint optimization for each candidate AP
   const plan = {};
@@ -387,7 +393,8 @@ function runConstrainedOptimizer(radios, channelSummary, aps, options = {}) {
     // Enumerate all (ch24, ch5) combinations
     valid24.forEach(ch24 => {
       valid5.forEach(ch5 => {
-        const score = scoreCombo(ap, ch24, ch5, vLoad24, vLoad5, proximityGraph, floorAssignments);
+        // FIX 5: passes allAPs explicitly
+        const score = scoreCombo(ap, ch24, ch5, vLoad24, vLoad5, proximityGraph, floorAssignments, allAPs);
         if (score < bestScore) {
           bestScore = score;
           bestCombo = { ch24, ch5 };
@@ -407,12 +414,10 @@ function runConstrainedOptimizer(radios, channelSummary, aps, options = {}) {
     const currentCh24Load = r24 ? (vLoad24[r24.channel] || 0) : 0;
     const currentCh5Load = r5 ? (vLoad5[r5.channel] || 0) : 0;
 
-    // Skip if AP is healthy (low CU, no CCI, minimal channel load)
     if (totalCci === 0 && maxCu < 50 && currentCh24Load <= 1 && currentCh5Load <= 1) {
       return;
     }
 
-    // Only include if at least one radio needs to change
     if (needsNgChange || needsNaChange) {
       // Update virtual load map (butterfly effect for subsequent APs)
       if (r24 && ch24 !== null && r24.channel !== ch24) {
@@ -472,7 +477,6 @@ function runConstrainedOptimizer(radios, channelSummary, aps, options = {}) {
   });
 
   // Compute AFTER metrics (full recomputation from final channel distribution)
-  // Build the final channel distribution after all proposed changes
   const finalChCounts24 = {};
   const finalChCounts5 = {};
   radios.forEach(r => {
@@ -484,7 +488,6 @@ function runConstrainedOptimizer(radios, channelSummary, aps, options = {}) {
     target[String(finalCh)] = (target[String(finalCh)] || 0) + 1;
   });
 
-  // Compute metrics from final channel counts
   let aftSumCu24 = 0, aftCount24 = 0, aftMaxCu24 = 0;
   let aftSumCu5 = 0, aftCount5 = 0, aftMaxCu5 = 0;
   let aftTotalCci = 0;
@@ -519,7 +522,6 @@ function runConstrainedOptimizer(radios, channelSummary, aps, options = {}) {
     else if (estCu > 50 || newCci > 4) aftWarning++;
   });
 
-  // Compute channel distribution variance for after state
   const aftVals24 = Object.values(finalChCounts24);
   const aftVals5 = Object.values(finalChCounts5);
   const aftAvg24 = aftVals24.length ? aftVals24.reduce((a, b) => a + b, 0) / aftVals24.length : 0;
@@ -541,7 +543,6 @@ function runConstrainedOptimizer(radios, channelSummary, aps, options = {}) {
     channelCounts5: finalChCounts5,
   };
 
-  // Compute deltas
   const improvementReport = {
     before: beforeMetrics,
     after: afterMetrics,

@@ -160,8 +160,7 @@ class NetworkAnalyzer {
 
   /**
    * Run deep diagnostics on client devices, focusing on iPads and Apple devices.
-   * @param {Array} clients - List of clients from UniFi API
-   * @param {Array} devices - List of devices from UniFi API
+   * FIX 11: Single-pass analysis — all metrics collected in one forEach loop.
    */
   analyzeClients(clients, devices) {
     // Map AP MAC to AP Name for easy lookup
@@ -181,23 +180,24 @@ class NetworkAnalyzer {
     });
 
     const clientDiagnostics = [];
+    let totalAppleClients = 0;
+    let totalIpads = 0;
+    let criticalCount = 0;
+    let warningCount = 0;
+    let healthyCount = 0;
+    let totalDownloadKbps = 0;
+    let totalUploadKbps = 0;
 
-    // Filter for Apple devices / iPads (for stats)
-    const appleClients = clients.filter(c => {
-      const oui = (c.oui || '').toLowerCase();
-      const hostname = (c.hostname || '').toLowerCase();
-      const name = (c.name || '').toLowerCase();
-      
-      // Specifically target iPads, or generally Apple devices since teachers report iPad issues
-      return oui === 'apple, inc.' || oui.includes('apple') || hostname.includes('ipad') || name.includes('ipad');
-    });
-
+    // Single pass: diagnose, classify, and aggregate all clients
     clients.forEach(c => {
       const oui = (c.oui || '').toLowerCase();
       const hostname = (c.hostname || '').toLowerCase();
       const name = (c.name || '').toLowerCase();
       const isApple = oui === 'apple, inc.' || oui.includes('apple') || hostname.includes('ipad') || name.includes('ipad');
       const isIpad = (c.hostname || c.name || '').toLowerCase().includes('ipad');
+
+      if (isApple) totalAppleClients++;
+      if (isIpad) totalIpads++;
 
       const diag = {
         mac: c.mac,
@@ -225,6 +225,9 @@ class NetworkAnalyzer {
         severity: 'healthy',
         recommendation: ''
       };
+
+      totalDownloadKbps += c.tx_rate || 0;
+      totalUploadKbps += c.rx_rate || 0;
 
       // 1. Diagnose Signal Strength (RSSI)
       if (diag.signal < -80) {
@@ -268,7 +271,7 @@ class NetworkAnalyzer {
         if (diag.severity !== 'critical') diag.severity = 'warning';
       }
 
-      // 6. Diagnose Reconnection / Roam Counts (connects/reconnects a few times)
+      // 6. Diagnose Reconnection / Roam Counts
       if (diag.roamCount > 8) {
         diag.flags.push(`Frequent Reconnection (${diag.roamCount} roams)`);
         diag.severity = 'critical';
@@ -315,39 +318,34 @@ class NetworkAnalyzer {
         diag.recommendation = 'Connection is optimal. No action required.';
       }
 
+      // Aggregate severity counts in the same pass
+      if (diag.severity === 'critical') criticalCount++;
+      else if (diag.severity === 'warning') warningCount++;
+      else healthyCount++;
+
       clientDiagnostics.push(diag);
     });
 
-    // Overall Client Health Score
     const totalCount = clientDiagnostics.length || 1;
-    const criticalCount = clientDiagnostics.filter(d => d.severity === 'critical').length;
-    const warningCount = clientDiagnostics.filter(d => d.severity === 'warning').length;
-    const healthyCount = clientDiagnostics.filter(d => d.severity === 'healthy').length;
     const healthIndex = Math.round((healthyCount + warningCount * 0.5) / totalCount * 100);
 
-    const allClientDiags = clientDiagnostics;
+    // Sort once at the end
+    const sorted = clientDiagnostics.sort((a, b) => {
+      const score = { 'critical': 3, 'warning': 2, 'healthy': 1 };
+      return score[b.severity] - score[a.severity] || (a.hostname.localeCompare(b.hostname));
+    });
 
-    // Aggregate speed metrics (kbps → sum across all clients)
-    const totalDownloadKbps = clients.reduce((sum, c) => sum + (c.tx_rate || 0), 0);
-    const totalUploadKbps = clients.reduce((sum, c) => sum + (c.rx_rate || 0), 0);
-
-    // Top downloaders (top 10 by tx_rate)
-    const topDownloaders = [...allClientDiags]
+    // Top downloaders (single sort + slice)
+    const topDownloaders = [...sorted]
       .sort((a, b) => b.txRateKbps - a.txRateKbps)
       .slice(0, 10);
 
-    // All struggling clients across all vendors
-    const strugglingAll = allClientDiags
-      .filter(c => c.severity !== 'healthy')
-      .sort((a, b) => {
-        const score = { critical: 3, warning: 2, healthy: 1 };
-        return score[b.severity] - score[a.severity];
-      });
+    const strugglingAll = sorted.filter(c => c.severity !== 'healthy');
 
     return {
       summary: {
-        totalAppleClients: appleClients.length,
-        totalIpads: clientDiagnostics.filter(d => d.isIpad).length,
+        totalAppleClients,
+        totalIpads,
         criticalCount,
         warningCount,
         healthyCount,
@@ -356,12 +354,8 @@ class NetworkAnalyzer {
         totalDownloadKbps,
         totalUploadKbps
       },
-      clients: clientDiagnostics.sort((a, b) => {
-        // Sort critical first, then warning, then healthy
-        const score = { 'critical': 3, 'warning': 2, 'healthy': 1 };
-        return score[b.severity] - score[a.severity] || (a.hostname.localeCompare(b.hostname));
-      }),
-      allClients: allClientDiags,
+      clients: sorted,
+      allClients: clientDiagnostics,
       topDownloaders,
       strugglingAll
     };

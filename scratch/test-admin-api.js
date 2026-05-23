@@ -4,6 +4,7 @@ const http = require('http');
 const TEST_PORT = 3999;
 let serverProcess = null;
 let cookie = '';
+let csrfToken = '';
 
 // Helper to make HTTP requests
 function request(method, path, body = null, headers = {}) {
@@ -88,6 +89,9 @@ async function runTests() {
       username: 'admin',
       password: 'admin'
     });
+    if (res.body.csrfToken) {
+      csrfToken = res.body.csrfToken;
+    }
     console.log('4. Login (Valid Creds):', res.status === 200 && res.body.success === true ? 'PASS' : 'FAIL', res.body);
   } catch (e) {
     console.error('Test 4 failed:', e);
@@ -107,7 +111,7 @@ async function runTests() {
       apMac: 'invalid-mac',
       radio: 'na',
       channel: 36
-    });
+    }, { 'x-csrf-token': csrfToken });
     console.log('6. Channel Change (Invalid MAC):', res.status === 400 ? 'PASS' : 'FAIL', res.body);
   } catch (e) {
     console.error('Test 6 failed:', e);
@@ -119,7 +123,7 @@ async function runTests() {
       apMac: '24:5a:4c:11:22:33',
       radio: 'invalid-band',
       channel: 36
-    });
+    }, { 'x-csrf-token': csrfToken });
     console.log('7. Channel Change (Invalid Radio):', res.status === 400 ? 'PASS' : 'FAIL', res.body);
   } catch (e) {
     console.error('Test 7 failed:', e);
@@ -131,7 +135,7 @@ async function runTests() {
       apMac: '24:5a:4c:11:22:33',
       radio: 'na',
       channel: -5
-    });
+    }, { 'x-csrf-token': csrfToken });
     console.log('8. Channel Change (Invalid Channel):', res.status === 400 ? 'PASS' : 'FAIL', res.body);
   } catch (e) {
     console.error('Test 8 failed:', e);
@@ -143,7 +147,7 @@ async function runTests() {
       apMac: '02:00:00:00:00:01', // Fits one of the Mock AP MACs
       radio: 'na',
       channel: 44
-    });
+    }, { 'x-csrf-token': csrfToken });
     console.log('9. Channel Change (Valid Request):', res.status === 200 && res.body.success === true ? 'PASS' : 'FAIL', res.body);
   } catch (e) {
     console.error('Test 9 failed:', e);

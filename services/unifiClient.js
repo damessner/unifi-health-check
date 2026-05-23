@@ -1,6 +1,8 @@
 const https = require('https');
 const config = require('../config');
 
+const REQUEST_TIMEOUT_MS = 15000;
+
 class UnifiClient {
   constructor() {
     this.host = config.unifi.host;
@@ -16,9 +18,6 @@ class UnifiClient {
 
   /**
    * Performs an HTTP request to the UniFi API.
-   * @param {Object} options - Request options (method, path, headers)
-   * @param {Object} [postData] - Optional JSON body
-   * @returns {Promise<{statusCode: number, headers: Object, body: string}>}
    */
   _request(options, postData) {
     return new Promise((resolve, reject) => {
@@ -37,7 +36,8 @@ class UnifiClient {
         agent: this.agent,
         path: options.path,
         method: options.method || 'GET',
-        headers: headers
+        headers: headers,
+        timeout: REQUEST_TIMEOUT_MS
       }, (res) => {
         let body = '';
         res.on('data', (chunk) => body += chunk);
@@ -48,6 +48,11 @@ class UnifiClient {
             body: body
           });
         });
+      });
+
+      req.on('timeout', () => {
+        req.destroy();
+        reject(new Error(`Request to ${options.path} timed out after ${REQUEST_TIMEOUT_MS}ms`));
       });
 
       req.on('error', (err) => {
@@ -100,7 +105,6 @@ class UnifiClient {
 
   /**
    * Helper to perform an authenticated GET request, with automatic login retry if needed.
-   * @param {string} path - API endpoint path
    */
   async _getWithRetry(path) {
     if (!this.cookie) {
@@ -109,8 +113,7 @@ class UnifiClient {
 
     try {
       let res = await this._request({ method: 'GET', path });
-      
-      // If we get an unauthorized or login-required error, retry login and query once
+
       if (res.statusCode === 401 || res.statusCode === 400 || res.body.includes('api.err.LoginRequired')) {
         console.warn(`[UniFi] Session expired (status ${res.statusCode}). Re-authenticating...`);
         await this.login();
@@ -131,40 +134,30 @@ class UnifiClient {
 
   /**
    * Fetch all UniFi devices on the configured site.
+   * FIX 7: No longer falls back to mock data silently on failure.
    */
   async getDevices() {
     if (process.env.MOCK_MODE === 'true') {
       console.log('[UniFi Mock] Serving simulated access point devices...');
       return MOCK_DEVICES;
     }
-    try {
-      return await this._getWithRetry(`/api/s/${this.site}/stat/device`);
-    } catch (err) {
-      console.warn(`[UniFi Connection Failed] Using simulated demo AP devices instead: ${err.message}`);
-      return MOCK_DEVICES;
-    }
+    return await this._getWithRetry(`/api/s/${this.site}/stat/device`);
   }
 
   /**
    * Fetch all active wireless clients on the configured site.
+   * FIX 7: No longer falls back to mock data silently on failure.
    */
   async getClients() {
     if (process.env.MOCK_MODE === 'true') {
       console.log('[UniFi Mock] Serving simulated wireless clients...');
       return MOCK_CLIENTS;
     }
-    try {
-      return await this._getWithRetry(`/api/s/${this.site}/stat/sta`);
-    } catch (err) {
-      console.warn(`[UniFi Connection Failed] Using simulated demo clients instead: ${err.message}`);
-      return MOCK_CLIENTS;
-    }
+    return await this._getWithRetry(`/api/s/${this.site}/stat/sta`);
   }
 
   /**
    * Helper to perform an authenticated PUT request, with automatic login retry if needed.
-   * @param {string} path - API endpoint path
-   * @param {Object} payload - JSON body
    */
   async _putWithRetry(path, payload) {
     if (!this.cookie) {
@@ -173,8 +166,7 @@ class UnifiClient {
 
     try {
       let res = await this._request({ method: 'PUT', path }, payload);
-      
-      // If we get an unauthorized or login-required error, retry login and query once
+
       if (res.statusCode === 401 || res.statusCode === 400 || (res.body && res.body.includes('api.err.LoginRequired'))) {
         console.warn(`[UniFi] Session expired (status ${res.statusCode}). Re-authenticating...`);
         await this.login();
@@ -195,8 +187,6 @@ class UnifiClient {
 
   /**
    * Update settings for a specific AP device.
-   * @param {string} deviceId - Internal device ID (_id)
-   * @param {Object} settings - Object of settings to update
    */
   async updateDeviceSettings(deviceId, settings) {
     if (process.env.MOCK_MODE === 'true') {
@@ -208,12 +198,8 @@ class UnifiClient {
 
   /**
    * Update the channel for a specific AP's radio.
-   * @param {string} apMac - MAC address of the target AP
-   * @param {string} radio - Radio band name ('ng' or 'na')
-   * @param {number} channel - New channel to set
    */
   async setApChannel(apMac, radio, channel) {
-    // 1. Fetch current devices to locate the AP and its internal ID
     const devices = await this.getDevices();
     const ap = devices.find(d => d.mac === apMac);
     if (!ap) {
@@ -225,17 +211,14 @@ class UnifiClient {
       throw new Error(`Internal device ID not found for AP with MAC ${apMac}`);
     }
 
-    // 2. Clone and modify the radio table
     const radioTable = ap.radio_table ? JSON.parse(JSON.stringify(ap.radio_table)) : [];
     const rIndex = radioTable.findIndex(r => r.radio === radio);
     if (rIndex === -1) {
       throw new Error(`Radio band "${radio}" not found on AP ${apMac}`);
     }
 
-    // Update channel
     radioTable[rIndex].channel = parseInt(channel, 10);
 
-    // 3. Send update payload to UniFi controller
     const payload = {
       radio_table: radioTable
     };

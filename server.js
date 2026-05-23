@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const express = require('express');
 const path = require('path');
 const config = require('./config');
@@ -11,28 +12,63 @@ const PORT = config.server.port;
 
 // Serve static assets from public folder
 app.use(express.static(path.join(__dirname, 'public')));
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 
-// Session store in memory
-const adminSessions = new Set();
+// ── Session store in memory ──────────────────────────────────────────────────
+const adminSessions = new Map(); // token → { createdAt, csrfToken }
 
-// Middleware to authenticate admin requests using a session cookie or header
-function adminAuth(req, res, next) {
-  let token = null;
+// ── Rate limiter for login attempts ──────────────────────────────────────────
+const loginAttempts = new Map(); // ip → { count, resetAt }
+const LOGIN_MAX_ATTEMPTS = 5;
+const LOGIN_WINDOW_MS = 60 * 1000; // 1 minute
+
+function checkRateLimit(ip) {
+  const now = Date.now();
+  const record = loginAttempts.get(ip);
+  if (!record) {
+    loginAttempts.set(ip, { count: 1, resetAt: now + LOGIN_WINDOW_MS });
+    return true;
+  }
+  if (now > record.resetAt) {
+    loginAttempts.set(ip, { count: 1, resetAt: now + LOGIN_WINDOW_MS });
+    return true;
+  }
+  record.count++;
+  if (record.count > LOGIN_MAX_ATTEMPTS) {
+    return false;
+  }
+  return true;
+}
+
+// ── CSRF helpers ─────────────────────────────────────────────────────────────
+function generateCSRFToken() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+function verifyCSRF(req, res, next) {
+  const token = req.headers['x-csrf-token'] || req.body._csrf;
+  const session = adminSessions.get(req.headers['x-admin-token'] || extractSessionToken(req));
+  if (!session || session.csrfToken !== token) {
+    return res.status(403).json({ success: false, error: 'CSRF validation failed' });
+  }
+  next();
+}
+
+function extractSessionToken(req) {
   if (req.headers.cookie) {
     const cookies = req.headers.cookie.split(';').reduce((acc, c) => {
       const parts = c.trim().split('=');
-      if (parts.length >= 2) {
-        acc[parts[0]] = parts.slice(1).join('=');
-      }
+      if (parts.length >= 2) acc[parts[0]] = parts.slice(1).join('=');
       return acc;
     }, {});
-    token = cookies.admin_session;
+    return cookies.admin_session;
   }
-  if (!token) {
-    token = req.get('x-admin-token');
-  }
+  return req.get('x-admin-token') || null;
+}
 
+// ── Middleware to authenticate admin requests ────────────────────────────────
+function adminAuth(req, res, next) {
+  const token = extractSessionToken(req);
   if (!token || !adminSessions.has(token)) {
     return res.status(401).json({ success: false, error: 'Unauthorized' });
   }
@@ -40,9 +76,7 @@ function adminAuth(req, res, next) {
 }
 
 app.use('/api', (req, res, next) => {
-  // Allow auth and admin endpoints to bypass the general API token check
   if (req.path.startsWith('/auth/') || req.path.startsWith('/admin/')) return next();
-
   if (!config.server.apiToken) return next();
   const provided = req.get('x-api-token');
   if (provided !== config.server.apiToken) {
@@ -158,7 +192,6 @@ app.get('/api/history', (req, res) => {
  */
 app.get('/api/health', async (req, res) => {
   try {
-    // Try logging in to ensure credentials and host are up
     await unifiClient.login();
     res.json({
       status: 'healthy',
@@ -184,12 +217,11 @@ app.get('/api/diagnostics', async (req, res) => {
     const { devices, clients } = await getFreshData(force);
 
     console.log(`[Analyzer] Processing stats for ${devices.length} devices and ${clients.length} clients...`);
-    
+
     const channelAnalysis = analyzer.analyzeChannels(devices);
     const clientAnalysis = analyzer.analyzeClients(clients, devices);
     const apsModel = buildApsModel(channelAnalysis);
 
-    // Only push to history when data is fresh from the controller (not served from cache)
     if (Date.now() - cache.lastFetch < FRESH_DATA_THRESHOLD_MS) {
       pushHistorySnapshot(channelAnalysis, clientAnalysis);
     }
@@ -214,7 +246,6 @@ app.get('/api/diagnostics', async (req, res) => {
 
 /**
  * API: Export channel optimization + client report as XLSX
- * Uses the butterfly-aware iterative greedy optimizer.
  */
 app.get('/api/export/xlsx', async (req, res) => {
   try {
@@ -249,9 +280,6 @@ app.get('/api/export/xlsx', async (req, res) => {
 
 /**
  * API: Run the constrained batch optimizer and return the plan as JSON.
- * Query params:
- *   maxChanges=N  - Max APs to change per round (default 8)
- *   force=true    - Bypass cache for fresh data
  */
 app.get('/api/optimize', async (req, res) => {
   try {
@@ -287,7 +315,7 @@ app.get('/api/optimize', async (req, res) => {
 });
 
 /**
- * API: Admin login
+ * API: Admin login — with rate limiting and CSRF token generation
  */
 app.post('/api/auth/login', (req, res) => {
   const { username, password } = req.body || {};
@@ -295,11 +323,22 @@ app.post('/api/auth/login', (req, res) => {
     return res.status(400).json({ success: false, error: 'Username and password are required' });
   }
 
+  // Rate limiting
+  const ip = req.ip || req.connection.remoteAddress || 'unknown';
+  if (!checkRateLimit(ip)) {
+    return res.status(429).json({ success: false, error: 'Too many login attempts. Try again later.' });
+  }
+
   if (username === config.admin.username && password === config.admin.password) {
-    const token = Math.random().toString(36).substring(2) + Date.now().toString(36);
-    adminSessions.add(token);
-    res.setHeader('Set-Cookie', `admin_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800`); // 8 hours
-    return res.json({ success: true, token });
+    // Cryptographically secure session token
+    const token = crypto.randomBytes(32).toString('hex');
+    const csrfToken = generateCSRFToken();
+    adminSessions.set(token, { createdAt: Date.now(), csrfToken });
+
+    const cookieFlags = `admin_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800`;
+    const secureFlag = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+    res.setHeader('Set-Cookie', cookieFlags + secureFlag);
+    return res.json({ success: true, token, csrfToken });
   }
 
   return res.status(401).json({ success: false, error: 'Invalid credentials' });
@@ -309,24 +348,8 @@ app.post('/api/auth/login', (req, res) => {
  * API: Admin logout
  */
 app.post('/api/auth/logout', (req, res) => {
-  let token = null;
-  if (req.headers.cookie) {
-    const cookies = req.headers.cookie.split(';').reduce((acc, c) => {
-      const parts = c.trim().split('=');
-      if (parts.length >= 2) {
-        acc[parts[0]] = parts.slice(1).join('=');
-      }
-      return acc;
-    }, {});
-    token = cookies.admin_session;
-  }
-  if (!token) {
-    token = req.get('x-admin-token');
-  }
-
-  if (token) {
-    adminSessions.delete(token);
-  }
+  const token = extractSessionToken(req);
+  if (token) adminSessions.delete(token);
 
   res.setHeader('Set-Cookie', 'admin_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0');
   return res.json({ success: true });
@@ -336,32 +359,17 @@ app.post('/api/auth/logout', (req, res) => {
  * API: Check admin auth status
  */
 app.get('/api/auth/status', (req, res) => {
-  let token = null;
-  if (req.headers.cookie) {
-    const cookies = req.headers.cookie.split(';').reduce((acc, c) => {
-      const parts = c.trim().split('=');
-      if (parts.length >= 2) {
-        acc[parts[0]] = parts.slice(1).join('=');
-      }
-      return acc;
-    }, {});
-    token = cookies.admin_session;
-  }
-  if (!token) {
-    token = req.get('x-admin-token');
-  }
-
+  const token = extractSessionToken(req);
   const authenticated = !!(token && adminSessions.has(token));
   return res.json({ success: true, authenticated });
 });
 
 /**
- * API: Admin channel change - strictly restricted to channel updates
+ * API: Admin channel change — strictly restricted, CSRF-protected
  */
-app.post('/api/admin/change-channel', adminAuth, async (req, res) => {
+app.post('/api/admin/change-channel', adminAuth, verifyCSRF, async (req, res) => {
   const { apMac, radio, channel } = req.body || {};
 
-  // Strict validation: only channel change is allowed
   if (!apMac || !radio || channel === undefined) {
     return res.status(400).json({ success: false, error: 'apMac, radio, and channel are required' });
   }
@@ -402,7 +410,6 @@ async function startServer() {
     if (process.env.MOCK_MODE === 'true') {
       console.log('[Startup] MOCK_MODE=true detected. Skipping initial UniFi controller login.');
     } else {
-    // Perform initial login to verify connection on startup
       await unifiClient.login();
       console.log('[Startup] Connection to UniFi Controller verified successfully!');
     }
