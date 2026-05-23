@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Debian%20%7C%20Proxmox%20LXC-orange.svg?logo=proxmox&logoColor=white&style=for-the-badge)](https://www.proxmox.com/)
 
-A modern, high-fidelity real-time network health diagnostics and channel analysis dashboard for UniFi Wireless controllers. It aggregates client telemetry, monitors access point (AP) channel utilization, categorizes client types (Apple vs. others), and streams metric history over a gorgeous premium dark-themed interface.
+A modern, high-fidelity real-time network health diagnostics and channel optimization dashboard for UniFi Wireless controllers. Features a constrained joint-band batch optimizer that jointly tunes both 2.4 GHz and 5 GHz channels across APs with proximity awareness, change budgeting, and incremental improvement tracking. Aggregates client telemetry, monitors AP channel utilization, and categorizes client types (Apple vs. others) over a premium dark-themed interface.
 
 ---
 
@@ -105,6 +105,7 @@ The application is configured using a `.env` file located in the root of the pro
 | `HOST_PORT` | `2943` | External port exposed on the host machine to access the UI. |
 | `CACHE_EXPIRY_SEC` | `15` | Caching duration (in seconds) of controller data to limit load. |
 | `API_TOKEN` | _(empty)_ | Optional API protection token; when set, send it in `x-api-token` header for all `/api/*` calls. |
+| `OPT_MAX_CHANGES` | `8` | Maximum APs the batch optimizer suggests per round. Lower = fewer changes, less risk. |
 | `UNIFI_ALLOW_SELF_SIGNED` | `false` | Keep `false` for production; only set `true` if you intentionally trust a self-signed controller certificate. |
 
 ---
@@ -138,6 +139,8 @@ The internal Node.js server exposes these diagnostic endpoints:
 - **`GET /api/health`**: Tests connection status to the UniFi controller and verifies credentials.
 - **`GET /api/diagnostics`**: Compiles AP radio congestion, active clients, and Apple device metrics. Use `?force=true` to bypass cache.
 - **`GET /api/history`**: Returns the ring-buffered timeline trends (up to 60 snapshot samples).
+- **`GET /api/optimize`**: Runs the constrained batch optimizer. Query params: `?maxChanges=8` (default 8), `?force=true` (bypass cache). Returns an AP-level joint-band channel plan, changed AP list, and before/after improvement estimates.
+- **`GET /api/export/xlsx`**: Generates a multi-sheet XLSX report (Channel Optimization, Client Issues, Summary, Improvement Report) using the constrained batch optimizer.
 
 If `API_TOKEN` is configured, include `x-api-token: <token>` for all `/api/*` requests.
 
@@ -162,8 +165,24 @@ This project is open-source and licensed under the [MIT License](LICENSE).
 
 Current implementation integrity (verified in this repository):
 
-- ✅ Implemented today: real-time diagnostics API, RF/channel analyzer, iPad/Apple client diagnostics, optimization guidance UI, in-memory history ring buffer, speed/capacity widgets.
-- ⚠️ Partially implemented: optimizer/sandbox simulation UX (no backend graph-coloring solver yet).
+- ✅ Implemented today: real-time diagnostics API, RF/channel analyzer, iPad/Apple client diagnostics, in-memory history ring buffer, speed/capacity widgets, **constrained joint-band batch optimizer** (AP-level, proximity-aware, change-limited), XLSX export with improvement report, batch optimizer UI panel, butterfly-effect sandbox simulator.
+- ⚠️ Partially implemented: optimizer UX polish (batch highlighting in grid, iterative recheck workflow).
 - ❌ Not implemented yet: webhook/email alerting, sticky-client roaming diagnostics, classroom SLA grouping, safe write-back controller actions, airtime fairness auditor, DHCP pool exhaustion predictor, SQLite persistent time-series, rogue AP radar, teacher portal/reporting endpoint.
 
 Planned advanced extensions are documented in **`/STRATEGIC_ROADMAP.md`**.
+
+### Constrained Batch Optimizer
+
+The **Constrained Joint-Band Batch Optimizer** (`services/optimizer.js`) replaces the old per-radio greedy algorithm with an AP-level solver that jointly optimizes both 2.4 GHz and 5 GHz channels per AP. Key design decisions:
+
+| Feature | Description |
+|---|---|
+| **AP-level joint-band** | Treats both radios of an AP as a unit. Evaluates all 57 channel combinations (3 × 19) per AP. |
+| **Change budget** | Limits suggestions to N APs per round (configurable, default 8). Prevents the "butterfly effect" of cascading changes across all APs. |
+| **Proximity-aware** | Builds a dynamic RF neighbor graph from live telemetry. Penalizes co-channel overlap between adjacent APs. |
+| **Floor separation** | Staggers channel assignments across EG/1OG/2OG floors for 3D interference reduction. |
+| **Stability bias** | Skips healthy APs (low CU, zero CCI, single-occupant channels) to avoid unnecessary disruption. |
+| **Improvement report** | Computes before/after metrics (avg CU, max CU, CCI count, channel variance) with estimated improvement percentage. |
+| **Incremental workflow** | Designed for "fix worst N → re-scan → re-optimize" cycles. Each round picks the next worst offenders. |
+
+Access the optimizer via the **Optimizer** tab in the dashboard or `GET /api/optimize?maxChanges=8`.
