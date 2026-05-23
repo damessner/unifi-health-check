@@ -1606,7 +1606,9 @@ function renderOptimalGrid() {
         }
       }
 
-      if (resolvedCount > 0) {
+      if (isInBatch) {
+        impactCell = `<span class="badge-batch-impact"><i data-lucide="target" style="width:12px;height:12px;display:inline-block;vertical-align:middle;margin-right:4px;"></i>🎯 Batch Target — Score: ${batchInfo.healthScore}</span>`;
+      } else if (resolvedCount > 0) {
         impactCell = `<span class="badge-impact-cleared"><i data-lucide="sparkles" style="width:12px;height:12px;display:inline-block;vertical-align:middle;margin-right:4px;"></i>✨ Cleared ${resolvedCount} Conflicts!</span>`;
       } else if (totalOverlaps === 0) {
         impactCell = `<span class="badge-impact-low"><i data-lucide="check" style="width:12px;height:12px;display:inline-block;vertical-align:middle;margin-right:4px;"></i>⚡ Low Impact (0 overlaps)</span>`;
@@ -1615,15 +1617,29 @@ function renderOptimalGrid() {
       }
     }
 
-    const auditBadge = hasDrift
-      ? `<span class="badge-drift"><i data-lucide="alert-triangle" style="width:12px; height:12px; display:inline-block; vertical-align:middle; margin-right:4px;"></i>DRIFT DETECTED</span>`
-      : `<span class="badge-ok"><i data-lucide="check" style="width:12px; height:12px; display:inline-block; vertical-align:middle; margin-right:4px;"></i>OPTIMAL</span>`;
+    const auditBadge = isInBatch
+      ? `<span class="badge-batch"><i data-lucide="target" style="width:12px; height:12px; display:inline-block; vertical-align:middle; margin-right:4px;"></i>BATCH ${batchInfo.changes}</span>`
+      : (hasDrift
+        ? `<span class="badge-drift"><i data-lucide="alert-triangle" style="width:12px; height:12px; display:inline-block; vertical-align:middle; margin-right:4px;"></i>DRIFT DETECTED</span>`
+        : `<span class="badge-ok"><i data-lucide="check" style="width:12px; height:12px; display:inline-block; vertical-align:middle; margin-right:4px;"></i>OPTIMAL</span>`);
 
     const isChecked = checkedMacs.includes(ap.mac);
+
+    // Check if this AP is in the current optimizer batch
+    let isInBatch = false;
+    let batchInfo = null;
+    if (optimizerData && Array.isArray(optimizerData.changedAPs)) {
+      batchInfo = optimizerData.changedAPs.find(c => c.mac === ap.mac);
+      isInBatch = !!batchInfo;
+    }
+
     const tr = document.createElement('tr');
     tr.setAttribute('data-ap-row-mac', ap.mac);
     if (isChecked) {
       tr.classList.add('row-opt-done');
+    }
+    if (isInBatch) {
+      tr.classList.add('row-opt-batch');
     }
 
     tr.innerHTML = `
@@ -1681,6 +1697,144 @@ function renderOptimalGrid() {
   if (window.lucide) {
     window.lucide.createIcons();
   }
+}
+
+// ============================================================
+//  BATCH CONSTRAINED OPTIMIZER
+// ============================================================
+
+let optimizerData = null;
+
+/**
+ * Run the constrained batch optimizer via the API and render results.
+ */
+async function runBatchOptimizer() {
+  const btn = document.getElementById('btn-run-optimizer');
+  const maxChanges = parseInt(document.getElementById('opt-max-changes')?.value || '8', 10);
+
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<i data-lucide="loader" style="width:14px; height:14px; animation:spin 1s infinite linear;"></i> Optimizing...';
+  }
+
+  try {
+    const url = `/api/optimize?maxChanges=${maxChanges}&force=false`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP status error: ${res.status}`);
+
+    const payload = await res.json();
+    if (!payload.success) throw new Error(payload.error || 'Optimization failed');
+
+    optimizerData = payload;
+    console.log('[Optimizer] Batch plan computed:', optimizerData);
+
+    updateBatchOptimizerDisplay();
+    renderOptimalGrid(); // re-render grid with batch highlights
+    showToast(`Optimizer complete: ${payload.changedAPs.length} APs in batch. ${payload.improvementReport.estimatedImprovementPct}% estimated improvement.`, 'success');
+
+  } catch (err) {
+    console.error('[Optimizer] Run failed:', err);
+    showToast(`Optimizer error: ${escapeHtml(err.message)}`, 'error');
+    updateBatchOptimizerDisplay(true, err.message);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i data-lucide="play" style="width:14px; height:14px;"></i> Run Optimizer';
+      if (window.lucide) window.lucide.createIcons();
+    }
+  }
+}
+
+/**
+ * Update the batch optimizer results panel UI.
+ */
+function updateBatchOptimizerDisplay(isError = false, errorMsg = '') {
+  const resultsDiv = document.getElementById('batch-optimizer-results');
+  const placeholder = document.getElementById('batch-optimizer-placeholder');
+  const content = document.getElementById('batch-optimizer-content');
+
+  if (!resultsDiv || !content) return;
+
+  if (isError || !optimizerData) {
+    resultsDiv.style.display = 'none';
+    if (placeholder) placeholder.style.display = 'block';
+    if (isError && placeholder) {
+      placeholder.innerHTML = `<p class="text-muted" style="text-align:center; padding:20px; color:var(--color-danger) !important;">
+        <i data-lucide="alert-triangle" style="width:16px; height:16px; display:inline-block; vertical-align:middle; margin-right:6px;"></i>
+        Optimization failed: ${escapeHtml(errorMsg)}
+      </p>`;
+    }
+    return;
+  }
+
+  if (placeholder) placeholder.style.display = 'none';
+  resultsDiv.style.display = 'block';
+
+  const { changedAPs, batchSummary, improvementReport } = optimizerData;
+  const ir = improvementReport;
+  const deltas = ir.deltas;
+
+  // Build the delta summary cards
+  const deltaItems = [
+    { label: 'Est. Improvement', value: `${ir.estimatedImprovementPct}%`, icon: 'trending-up', cls: ir.estimatedImprovementPct > 0 ? 'positive' : 'neutral' },
+    { label: 'CCI Reduction', value: deltas.cciReduction, icon: 'radio', cls: deltas.cciReduction > 0 ? 'positive' : 'neutral' },
+    { label: '2.4G Avg CU Drop', value: `${deltas.avgCu24Delta > 0 ? '↓' : ''}${deltas.avgCu24Delta}%`, icon: 'wifi', cls: deltas.avgCu24Delta > 0 ? 'positive' : 'neutral' },
+    { label: '5G Avg CU Drop', value: `${deltas.avgCu5Delta > 0 ? '↓' : ''}${deltas.avgCu5Delta}%`, icon: 'wifi', cls: deltas.avgCu5Delta > 0 ? 'positive' : 'neutral' },
+  ];
+
+  const deltaCards = deltaItems.map(d => `
+    <div class="opt-delta-card ${d.cls}">
+      <i data-lucide="${d.icon}" style="width:16px; height:16px; margin-right:4px;"></i>
+      <span class="opt-delta-label">${d.label}</span>
+      <span class="opt-delta-value">${d.value}</span>
+    </div>
+  `).join('');
+
+  // Build changed APs list
+  const apCards = changedAPs.length > 0
+    ? changedAPs.map((ap, i) => `
+        <div class="opt-ap-card">
+          <span class="opt-ap-rank">#${i + 1}</span>
+          <div class="opt-ap-info">
+            <strong>${escapeHtml(ap.name)}</strong>
+            <span class="opt-ap-floor">${escapeHtml(ap.floor)}</span>
+            <span class="opt-ap-changes">${escapeHtml(ap.changes)}</span>
+            <span class="opt-ap-score">Score: ${ap.healthScore}</span>
+          </div>
+        </div>
+      `).join('')
+    : '<p class="text-muted" style="text-align:center;">No changes needed. All APs are optimally configured.</p>';
+
+  content.innerHTML = `
+    <div class="opt-batch-header">
+      <div class="opt-batch-title">
+        <i data-lucide="check-circle" style="width:18px; height:18px; color: var(--color-success);"></i>
+        <span><strong>${batchSummary.changesSuggested}</strong> of <strong>${optimizerData.totalAPs}</strong> APs selected for this batch</span>
+      </div>
+      <span class="count-badge bg-purple-alpha">Max ${batchSummary.maxChanges}/round</span>
+    </div>
+
+    <div class="opt-delta-row" style="display:grid; grid-template-columns:repeat(4, 1fr); gap:10px; margin-bottom:16px;">
+      ${deltaCards}
+    </div>
+
+    <div class="opt-ap-list">
+      <h4 style="font-size:0.85rem; margin-bottom:10px; color:var(--text-muted);">
+        <i data-lucide="list" style="width:14px; height:14px; display:inline-block; vertical-align:middle; margin-right:6px;"></i>
+        Batch APs (fix these, re-scan, re-optimize)
+      </h4>
+      ${apCards}
+    </div>
+
+    <div class="opt-next-steps" style="margin-top:12px; padding:10px; background:rgba(39,174,96,0.08); border-radius:8px; border-left:3px solid var(--color-success);">
+      <p style="font-size:0.8rem; color:var(--color-success); margin:0;">
+        <i data-lucide="arrow-right" style="width:14px; height:14px; display:inline-block; vertical-align:middle; margin-right:4px;"></i>
+        ${escapeHtml(batchSummary.recommendation)}
+      </p>
+    </div>
+  `;
+
+  if (window.lucide) window.lucide.createIcons();
 }
 
 // ============================================================

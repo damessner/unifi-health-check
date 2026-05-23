@@ -856,6 +856,40 @@
           </div>
         </div>
 
+        <!-- BATCH CONSTRAINED OPTIMIZER PANEL -->
+        <div class="glass-card mt-4 no-print" id="batch-optimizer-panel">
+          <div class="card-header flex-header">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <div class="header-icon bg-purple-alpha"><i data-lucide="target"></i></div>
+              <h3>Constrained Batch Optimizer</h3>
+            </div>
+            <div style="display:flex; align-items:center; gap:12px;">
+              <label style="font-size:0.8rem; color:var(--text-muted); display:flex; align-items:center; gap:6px;">
+                Max APs per batch:
+                <select id="opt-max-changes" style="background:rgba(255,255,255,0.06); border:1px solid var(--border-glass); color:white; padding:4px 8px; border-radius:6px; font-size:0.8rem;">
+                  <option value="5">5 APs</option>
+                  <option value="8" selected>8 APs</option>
+                  <option value="10">10 APs</option>
+                  <option value="12">12 APs</option>
+                  <option value="15">15 APs</option>
+                </select>
+              </label>
+              <button class="btn-primary" id="btn-run-optimizer" onclick="runBatchOptimizer()" style="background: linear-gradient(135deg, #8B5CF6, #6366F1); padding:8px 16px; border-radius:8px; border:none; color:white; font-weight:600; font-size:0.85rem; cursor:pointer; display:inline-flex; align-items:center; gap:6px;">
+                <i data-lucide="play" style="width:14px; height:14px;"></i> Run Optimizer
+              </button>
+            </div>
+          </div>
+          <div class="card-body" id="batch-optimizer-results" style="display:none;">
+            <div id="batch-optimizer-content"></div>
+          </div>
+          <div class="card-body" id="batch-optimizer-placeholder">
+            <p class="text-muted" style="text-align:center; padding:20px;">
+              <i data-lucide="info" style="width:16px; height:16px; display:inline-block; vertical-align:middle; margin-right:6px;"></i>
+              Click "Run Optimizer" to compute an AP-level joint-band channel plan. The optimizer selects the worst-performing APs, jointly optimizes their 2.4GHz and 5GHz channels, and provides before/after improvement estimates. Fix these, re-scan, then run again for the next batch.
+            </p>
+          </div>
+        </div>
+
         <!-- Tailored Optimal Network Channel Grid Plan -->
         <div class="glass-card mt-4">
           <div class="card-header flex-header">

@@ -1363,6 +1363,158 @@ body {
   text-decoration: none !important; /* Keep checkbox and audit badge normal */
 }
 
+/* Batch Optimizer Row Styling */
+.row-opt-batch {
+  background: rgba(139, 92, 246, 0.08) !important;
+  border-left: 3px solid #8B5CF6 !important;
+  transition: background 0.3s ease;
+}
+.row-opt-batch:hover {
+  background: rgba(139, 92, 246, 0.15) !important;
+}
+
+.badge-batch {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 4px 8px;
+  border-radius: 20px;
+  background: rgba(139, 92, 246, 0.15);
+  color: #A78BFA;
+  border: 1px solid rgba(139, 92, 246, 0.3);
+}
+
+.badge-batch-impact {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 20px;
+  background: rgba(139, 92, 246, 0.12);
+  color: #C4B5FD;
+}
+
+/* Batch Optimizer Panel */
+.opt-delta-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.opt-delta-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-glass);
+  text-align: center;
+}
+.opt-delta-card.positive {
+  border-color: rgba(39, 174, 96, 0.3);
+  background: rgba(39, 174, 96, 0.06);
+}
+.opt-delta-card.positive .opt-delta-value {
+  color: var(--color-success);
+}
+.opt-delta-card.neutral .opt-delta-value {
+  color: var(--text-muted);
+}
+
+.opt-delta-label {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+.opt-delta-value {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-top: 2px;
+}
+
+.opt-batch-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-glass);
+}
+.opt-batch-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  color: white;
+}
+
+.opt-ap-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.opt-ap-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-glass);
+  transition: background 0.2s ease;
+}
+.opt-ap-card:hover {
+  background: rgba(139, 92, 246, 0.08);
+}
+.opt-ap-rank {
+  font-size: 0.85rem;
+  font-weight: 800;
+  color: #8B5CF6;
+  min-width: 28px;
+  text-align: center;
+}
+.opt-ap-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  flex: 1;
+}
+.opt-ap-info strong {
+  font-size: 0.85rem;
+  color: white;
+}
+.opt-ap-floor {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.05);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+.opt-ap-changes {
+  font-size: 0.78rem;
+  color: #A78BFA;
+  font-weight: 600;
+}
+.opt-ap-score {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+@media (max-width: 768px) {
+  .opt-delta-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
 /* Premium Checkbox Styling */
 .opt-done-checkbox {
   appearance: none;

@@ -4,6 +4,7 @@ const config = require('./config');
 const unifiClient = require('./services/unifiClient');
 const analyzer = require('./services/analyzer');
 const xlsxExporter = require('./services/xlsxExporter');
+const optimizer = require('./services/optimizer');
 
 const app = express();
 const PORT = config.server.port;
@@ -221,12 +222,16 @@ app.get('/api/export/xlsx', async (req, res) => {
     const channelAnalysis = analyzer.analyzeChannels(devices);
     const clientAnalysis  = analyzer.analyzeClients(clients, devices);
 
+    const apsModel = buildApsModel(channelAnalysis);
+
     const diagnosticsData = {
       channels: channelAnalysis,
-      clients:  clientAnalysis
+      clients:  clientAnalysis,
+      aps: apsModel
     };
 
-    const buffer = await xlsxExporter.generateXlsx(diagnosticsData);
+    const maxChanges = parseInt(process.env.OPT_MAX_CHANGES, 10) || 8;
+    const buffer = await xlsxExporter.generateXlsx(diagnosticsData, { maxChanges });
     const ts = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
     const filename = `unifi_optimization_${ts}.xlsx`;
 
@@ -239,6 +244,45 @@ app.get('/api/export/xlsx', async (req, res) => {
   } catch (err) {
     console.error('[Export] XLSX generation failed:', err);
     res.status(500).json({ success: false, error: 'Failed to generate XLSX report.', details: err.message });
+  }
+});
+
+/**
+ * API: Run the constrained batch optimizer and return the plan as JSON.
+ * Query params:
+ *   maxChanges=N  - Max APs to change per round (default 8)
+ *   force=true    - Bypass cache for fresh data
+ */
+app.get('/api/optimize', async (req, res) => {
+  try {
+    const force = req.query.force === 'true';
+    const maxChanges = parseInt(req.query.maxChanges, 10) || parseInt(process.env.OPT_MAX_CHANGES, 10) || 8;
+    const minImprovementThreshold = parseInt(req.query.minImprovement, 10) || 5;
+
+    const { devices, clients } = await getFreshData(force);
+    const channelAnalysis = analyzer.analyzeChannels(devices);
+    const clientAnalysis  = analyzer.analyzeClients(clients, devices);
+    const apsModel = buildApsModel(channelAnalysis);
+
+    const result = optimizer.runConstrainedOptimizer(
+      channelAnalysis.radios,
+      channelAnalysis.summary,
+      apsModel,
+      { maxChanges, minImprovementThreshold }
+    );
+
+    res.json({
+      success: true,
+      timestamp: Date.now(),
+      ...result
+    });
+  } catch (err) {
+    console.error('[Optimizer] Optimization run failed:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to run optimization engine.',
+      details: err.message
+    });
   }
 });
 
