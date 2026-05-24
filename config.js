@@ -27,5 +27,12 @@ module.exports = {
   admin: {
     username: process.env.ADMIN_USER || 'admin',
     password: process.env.ADMIN_PASS || 'admin'
+  },
+  mock: {
+    enabled: process.env.MOCK_MODE === 'true',
+    stackMode: process.env.MOCK_STACK_MODE === 'true'
+  },
+  opt: {
+    maxChanges: parseInt(process.env.OPT_MAX_CHANGES, 10) || 8
   }
 };

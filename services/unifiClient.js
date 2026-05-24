@@ -106,7 +106,7 @@ class UnifiClient {
   /**
    * Helper to perform an authenticated GET request, with automatic login retry if needed.
    */
-  async _getWithRetry(path) {
+  async _getWithRetry(path, retries = 0) {
     if (!this.cookie) {
       await this.login();
     }
@@ -114,17 +114,22 @@ class UnifiClient {
     try {
       let res = await this._request({ method: 'GET', path });
 
-      if (res.statusCode === 401 || res.statusCode === 400 || res.body.includes('api.err.LoginRequired')) {
+      if ((res.statusCode === 401 || res.statusCode === 400 || (typeof res.body === 'string' && res.body.includes('api.err.LoginRequired'))) && retries < 1) {
         console.warn(`[UniFi] Session expired (status ${res.statusCode}). Re-authenticating...`);
         await this.login();
-        res = await this._request({ method: 'GET', path });
+        return await this._getWithRetry(path, retries + 1);
       }
 
       if (res.statusCode !== 200) {
-        throw new Error(`API call to ${path} failed with status ${res.statusCode}: ${res.body}`);
+        throw new Error(`API call to ${path} failed with status ${res.statusCode}: ${String(res.body).slice(0, 200)}`);
       }
 
-      const data = JSON.parse(res.body);
+      let data;
+      try {
+        data = JSON.parse(res.body);
+      } catch (parseErr) {
+        throw new Error(`Controller returned invalid JSON for ${path}: ${String(res.body).slice(0, 100)}`);
+      }
       return data.data || [];
     } catch (err) {
       console.error(`[UniFi] Error fetching ${path}:`, err.message);
@@ -137,7 +142,7 @@ class UnifiClient {
    * FIX 7: No longer falls back to mock data silently on failure.
    */
   async getDevices() {
-    if (process.env.MOCK_MODE === 'true') {
+    if (config.mock.enabled) {
       console.log('[UniFi Mock] Serving simulated access point devices...');
       return MOCK_DEVICES;
     }
@@ -149,7 +154,7 @@ class UnifiClient {
    * FIX 7: No longer falls back to mock data silently on failure.
    */
   async getClients() {
-    if (process.env.MOCK_MODE === 'true') {
+    if (config.mock.enabled) {
       console.log('[UniFi Mock] Serving simulated wireless clients...');
       return MOCK_CLIENTS;
     }
@@ -159,7 +164,7 @@ class UnifiClient {
   /**
    * Helper to perform an authenticated PUT request, with automatic login retry if needed.
    */
-  async _putWithRetry(path, payload) {
+  async _putWithRetry(path, payload, retries = 0) {
     if (!this.cookie) {
       await this.login();
     }
@@ -167,17 +172,22 @@ class UnifiClient {
     try {
       let res = await this._request({ method: 'PUT', path }, payload);
 
-      if (res.statusCode === 401 || res.statusCode === 400 || (res.body && res.body.includes('api.err.LoginRequired'))) {
+      if ((res.statusCode === 401 || res.statusCode === 400 || (res.body && typeof res.body === 'string' && res.body.includes('api.err.LoginRequired'))) && retries < 1) {
         console.warn(`[UniFi] Session expired (status ${res.statusCode}). Re-authenticating...`);
         await this.login();
-        res = await this._request({ method: 'PUT', path }, payload);
+        return await this._putWithRetry(path, payload, retries + 1);
       }
 
       if (res.statusCode !== 200) {
-        throw new Error(`API call to ${path} failed with status ${res.statusCode}: ${res.body}`);
+        throw new Error(`API call to ${path} failed with status ${res.statusCode}: ${String(res.body).slice(0, 200)}`);
       }
 
-      const data = JSON.parse(res.body);
+      let data;
+      try {
+        data = JSON.parse(res.body);
+      } catch (parseErr) {
+        throw new Error(`Controller returned invalid JSON for ${path}: ${String(res.body).slice(0, 100)}`);
+      }
       return data.data || [];
     } catch (err) {
       console.error(`[UniFi] Error updating ${path}:`, err.message);
@@ -189,7 +199,7 @@ class UnifiClient {
    * Update settings for a specific AP device.
    */
   async updateDeviceSettings(deviceId, settings) {
-    if (process.env.MOCK_MODE === 'true') {
+    if (config.mock.enabled) {
       console.log(`[UniFi Mock] Simulating updating device ${deviceId} settings:`, JSON.stringify(settings));
       return [{ _id: deviceId, ...settings }];
     }
@@ -236,7 +246,7 @@ const MOCK_CLIENTS = buildMockClients(MOCK_DEVICES, 60);
 function buildMockDevices(count) {
   const devices = [];
   const channels24 = [1, 6, 11];
-  const stackMode = process.env.MOCK_STACK_MODE === 'true';
+  const stackMode = config.mock.stackMode;
   // In stack mode, 80% of APs get 40 or 44 (the school's real problem)
   const channels5Stacked = [40, 40, 40, 40, 44, 44, 44, 36, 48, 100];
   const channels5Normal  = [36, 40, 44, 48, 100, 104, 108, 112, 116, 120];

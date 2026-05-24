@@ -23,8 +23,23 @@ let filterParams = {
   ipadType: 'all'
 };
 
+// structuredClone fallback for environments that don't support it natively
+const safeClone = (obj) => {
+  try { return structuredClone(obj); } catch (e) { return JSON.parse(JSON.stringify(obj)); }
+};
+
+// Proximity graph cache — rebuild only when AP data changes
+let _cachedProxGraph = null;
+let _cachedProxKey = '';
+function getCachedProxGraph(aps) {
+  const key = Array.isArray(aps) ? aps.map(a => a.mac + ':' + (a.radios?.ng?.channel || '') + ':' + (a.radios?.na?.channel || '')).join('|') : '';
+  if (_cachedProxGraph && key === _cachedProxKey) return _cachedProxGraph;
+  _cachedProxKey = key;
+  _cachedProxGraph = buildDynamicProximityGraph(aps);
+  return _cachedProxGraph;
+}
+
 // ============================================================
-//  DASHBOARD CONSTANTS
 // ============================================================
 
 /** Maximum expected throughput for speed gauge scaling (Mbps) */
@@ -324,7 +339,7 @@ async function fetchData(isSilent = false, force = false) {
     if (sandboxModeEnabled) {
       runRFPropagationEngine();
     } else {
-      apiData = JSON.parse(JSON.stringify(rawApiData));
+      apiData = safeClone(rawApiData);
     }
     
     // Process and render all segments
@@ -1352,7 +1367,7 @@ function renderOptimalGrid() {
   });
 
   const apArray = Object.values(apList).sort((a, b) => a.name.localeCompare(b.name));
-  const proximityModel = buildDynamicProximityGraph(apiData.aps || apArray);
+  const proximityModel = getCachedProxGraph(apiData.aps || apArray);
 
   const ch24Options = [1, 6, 11];
   const ch5Options = [36, 44, 52, 60, 100, 108, 116, 124, 132, 140];
@@ -1515,7 +1530,7 @@ function renderOptimalGrid() {
         `<option value="${ch}" ${curCh24 === ch ? 'selected' : ''}>Ch ${ch}</option>`
       ).join('');
       
-      const ch5SelectOptions = [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144].map(ch => 
+      const ch5SelectOptions = [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140].map(ch => 
         `<option value="${ch}" ${curCh5 === ch ? 'selected' : ''}>Ch ${ch}</option>`
       ).join('');
       
@@ -1814,7 +1829,7 @@ async function rescanAndReoptimize() {
     if (sandboxModeEnabled) {
       runRFPropagationEngine();
     } else {
-      apiData = JSON.parse(JSON.stringify(rawApiData));
+      apiData = safeClone(rawApiData);
     }
 
     // Update controller status card immediately (non-blocking, no grid flash)
@@ -3057,7 +3072,7 @@ function runRFPropagationEngine() {
   apArray.forEach(ap => {
     apMap[ap.mac] = ap;
   });
-  const proximityModel = buildDynamicProximityGraph(apArray);
+  const proximityModel = getCachedProxGraph(apArray);
 
   const radioByApBand = {};
   channelsRadios.forEach(radio => {
@@ -3373,7 +3388,7 @@ function toggleSandboxMode(enabled) {
     }
   } else {
     if (rawApiData) {
-      apiData = JSON.parse(JSON.stringify(rawApiData));
+      apiData = safeClone(rawApiData);
     }
     const cascadeLogList = document.getElementById('cascade-log-list');
     if (cascadeLogList) {
@@ -3404,7 +3419,7 @@ function resetSandboxOverrides() {
     runRFPropagationEngine();
   } else {
     if (rawApiData) {
-      apiData = JSON.parse(JSON.stringify(rawApiData));
+      apiData = safeClone(rawApiData);
     }
   }
   
@@ -3443,7 +3458,7 @@ function renderProximityMap() {
   apiData.aps.forEach(ap => {
     apMap[ap.mac] = ap;
   });
-  const proximityModel = buildDynamicProximityGraph(apiData.aps);
+  const proximityModel = getCachedProxGraph(apiData.aps);
   
   apiData.aps.forEach(ap => {
     const config = proximityModel[ap.mac];

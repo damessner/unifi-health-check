@@ -14,6 +14,15 @@ const PORT = config.server.port;
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json({ limit: '1mb' }));
 
+// CORS for external API access (e.g., Grafana embedding, custom scripts)
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-token, x-admin-token, x-csrf-token');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
 // ── Session store in memory ──────────────────────────────────────────────────
 const adminSessions = new Map(); // token → { createdAt, csrfToken }
 
@@ -58,7 +67,7 @@ function generateCSRFToken() {
 }
 
 function verifyCSRF(req, res, next) {
-  const token = req.headers['x-csrf-token'] || req.body._csrf;
+  const token = req.headers['x-csrf-token'];
   const session = adminSessions.get(req.headers['x-admin-token'] || extractSessionToken(req));
   if (!session || session.csrfToken !== token) {
     return res.status(403).json({ success: false, error: 'CSRF validation failed' });
@@ -86,6 +95,9 @@ function adminAuth(req, res, next) {
   }
   next();
 }
+
+// Trust proxy for correct req.ip behind reverse proxies
+app.set('trust proxy', 1);
 
 app.use('/api', (req, res, next) => {
   if (req.path.startsWith('/auth/') || req.path.startsWith('/admin/')) return next();
@@ -176,16 +188,23 @@ async function getFreshData(bypassCache = false) {
   }
 
   console.log('[UniFi] Fetching fresh network data from controller...');
-  const [devices, clients] = await Promise.all([
-    unifiClient.getDevices(),
-    unifiClient.getClients()
-  ]);
+  try {
+    const [devices, clients] = await Promise.all([
+      unifiClient.getDevices(),
+      unifiClient.getClients()
+    ]);
 
-  cache.devices = devices;
-  cache.clients = clients;
-  cache.lastFetch = now;
+    cache.devices = devices;
+    cache.clients = clients;
+    cache.lastFetch = now;
 
-  return { devices, clients };
+    return { devices, clients };
+  } catch (err) {
+    cache.devices = null;
+    cache.clients = null;
+    cache.lastFetch = 0;
+    throw err;
+  }
 }
 
 /**
@@ -262,7 +281,7 @@ app.get('/api/diagnostics', async (req, res) => {
 app.get('/api/export/xlsx', async (req, res) => {
   try {
     const force = req.query.force === 'true';
-    const maxChanges = parseInt(req.query.maxChanges, 10) || parseInt(process.env.OPT_MAX_CHANGES, 10) || 8;
+    const maxChanges = parseInt(req.query.maxChanges, 10) || config.opt.maxChanges;
 
     const { devices, clients } = await getFreshData(force);
     const channelAnalysis = analyzer.analyzeChannels(devices);
@@ -298,7 +317,7 @@ app.get('/api/export/xlsx', async (req, res) => {
 app.get('/api/optimize', async (req, res) => {
   try {
     const force = req.query.force === 'true';
-    const maxChanges = parseInt(req.query.maxChanges, 10) || parseInt(process.env.OPT_MAX_CHANGES, 10) || 8;
+    const maxChanges = parseInt(req.query.maxChanges, 10) || config.opt.maxChanges;
     const minImprovementThreshold = parseInt(req.query.minImprovement, 10) || 5;
 
     const { devices, clients } = await getFreshData(force);
@@ -420,24 +439,49 @@ app.get('*', (req, res) => {
 // Startup check & server start
 async function startServer() {
   console.log('=== UniFi Diagnostics System Startup ===');
-  try {
-    if (process.env.MOCK_MODE === 'true') {
-      console.log('[Startup] MOCK_MODE=true detected. Skipping initial UniFi controller login.');
-    } else {
+  if (config.mock.enabled) {
+    console.log('[Startup] MOCK_MODE=true detected. Skipping initial UniFi controller login.');
+  } else {
+    try {
       await unifiClient.login();
       console.log('[Startup] Connection to UniFi Controller verified successfully!');
+    } catch (err) {
+      console.warn(`[Startup Warning] Could not connect to UniFi Controller: ${err.message}`);
+      console.warn('[Startup] Will retry connection in 30 seconds...');
+      const retryInterval = setInterval(async () => {
+        try {
+          await unifiClient.login();
+          console.log('[Startup] UniFi Controller reconnection successful!');
+          clearInterval(retryInterval);
+        } catch (retryErr) {
+          console.warn(`[Startup] Retry connection failed: ${retryErr.message}`);
+        }
+      }, 30000);
+      retryInterval.unref();
     }
-  } catch (err) {
-    console.warn(`[Startup Warning] Could not connect to UniFi Controller: ${err.message}`);
-    console.warn('[Startup Warning] Server will start but API requests may fail until connection is restored.');
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n[Server] Network Health dashboard is running!`);
     console.log(`[Server] Local URL:   http://localhost:${PORT}`);
     console.log(`[Server] Network URL: http://0.0.0.0:${PORT}`);
     console.log('========================================');
   });
+
+  // Graceful shutdown
+  function shutdown(signal) {
+    console.log(`\n[Server] Received ${signal}. Shutting down gracefully...`);
+    server.close(() => {
+      console.log('[Server] HTTP server closed.');
+      process.exit(0);
+    });
+    setTimeout(() => {
+      console.error('[Server] Forced exit after timeout.');
+      process.exit(1);
+    }, 10000);
+  }
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 startServer();

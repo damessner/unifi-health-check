@@ -18,6 +18,14 @@ function getFriendlyModelName(model) {
   return MODEL_MAPPINGS[model] || model;
 }
 
+const HEALTH_THRESHOLDS = {
+  criticalCu: 75,
+  criticalCci: 12,
+  warningCu: 50,
+  warningCci: 4,
+  warningRetries: 25
+};
+
 class NetworkAnalyzer {
   /**
    * Run RF channel loading and interference diagnostics.
@@ -100,9 +108,9 @@ class NetworkAnalyzer {
       r.cci_count = activeChannelCount - 1; // Number of other APs sharing the same channel
       
       // Determine radio health level
-      if (r.cu_total > 75 || r.cci_count > 12) {
+      if (r.cu_total > HEALTH_THRESHOLDS.criticalCu || r.cci_count > HEALTH_THRESHOLDS.criticalCci) {
         r.health = 'critical';
-      } else if (r.cu_total > 50 || r.cci_count > 4 || r.tx_retries_pct > 25) {
+      } else if (r.cu_total > HEALTH_THRESHOLDS.warningCu || r.cci_count > HEALTH_THRESHOLDS.warningCci || r.tx_retries_pct > HEALTH_THRESHOLDS.warningRetries) {
         r.health = 'warning';
       } else {
         r.health = 'healthy';
@@ -362,4 +370,7 @@ class NetworkAnalyzer {
   }
 }
 
-module.exports = new NetworkAnalyzer();
+// Export a single instance to share across the application
+const analyzerInstance = new NetworkAnalyzer();
+analyzerInstance.HEALTH_THRESHOLDS = HEALTH_THRESHOLDS;
+module.exports = analyzerInstance;
