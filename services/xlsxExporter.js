@@ -71,37 +71,6 @@ function applyCell(cell, value, fill) {
   if (fill) cell.fill = fill;
 }
 
-// ── Build APs model from radios (same logic as server.buildApsModel) ─────────
-function buildApsFromRadios(radios) {
-  const map = {};
-  radios.forEach(r => {
-    if (!map[r.apMac]) {
-      map[r.apMac] = {
-        mac: r.apMac,
-        name: r.apName,
-        ip: r.ip,
-        model: r.model,
-        radios: {}
-      };
-    }
-    map[r.apMac].radios[r.radio] = {
-      channel: r.channel,
-      cu_total: r.cu_total,
-      cu_self_rx: r.cu_self_rx,
-      cu_self_tx: r.cu_self_tx,
-      cci_count: r.cci_count,
-      tx_retries_pct: r.tx_retries_pct,
-      tx_power: r.tx_power,
-      tx_power_mode: r.tx_power_mode,
-      configured_tx_power: r.configured_tx_power,
-      min_rssi_enabled: r.min_rssi_enabled,
-      min_rssi: r.min_rssi,
-      bw: r.bw
-    };
-  });
-  return Object.values(map);
-}
-
 // ── Improvement Report Sheet ──────────────────────────────────────────────────
 
 function buildImprovementSheet(wb, improvementReport, batchSummary) {
@@ -117,7 +86,7 @@ function buildImprovementSheet(wb, improvementReport, batchSummary) {
   ws.getColumn(2).width = 16;
   ws.getColumn(3).width = 16;
 
-  const addRow = (rowNum, label, beforeVal, afterVal, deltaVal, labelFill) => {
+  const addRow = (rowNum, label, beforeVal, deltaVal, labelFill) => {
     const row = ws.getRow(rowNum);
     const c1 = row.getCell(1); c1.value = label; c1.font = S.fntWhiteBold;
     c1.fill = labelFill || S.fSubHdr; c1.border = S.thin; c1.alignment = S.left;
@@ -125,8 +94,28 @@ function buildImprovementSheet(wb, improvementReport, batchSummary) {
     c2.border = S.thin; c2.alignment = S.center;
     const c3 = row.getCell(3); c3.value = deltaVal; c3.font = S.fntWhiteBold;
     c3.border = S.thin; c3.alignment = S.center;
-    c3.fill = typeof deltaVal === 'number' && deltaVal > 0 ? S.fGreen :
-              typeof deltaVal === 'number' && deltaVal < 0 ? S.fRed : S.fGray;
+
+    let isGood = false;
+    let isBad = false;
+    if (typeof deltaVal === 'string') {
+      if (deltaVal.includes('↓') || deltaVal.startsWith('-')) {
+        isGood = true; // reduction in utilization/CCI/variance is good!
+      } else if (deltaVal.includes('↑') || (deltaVal.match(/^\+?\d+/) && !deltaVal.includes('%'))) {
+        isBad = true; // increase is bad!
+      } else if (deltaVal.includes('%') && !deltaVal.startsWith('0') && !deltaVal.startsWith('-')) {
+        isGood = true; // positive overall improvement % is good!
+      }
+    }
+
+    if (labelFill) {
+      c3.fill = labelFill;
+    } else if (isGood) {
+      c3.fill = S.fGreen;
+    } else if (isBad) {
+      c3.fill = S.fRed;
+    } else {
+      c3.fill = S.fGray;
+    }
     row.height = 20;
   };
 
@@ -267,18 +256,21 @@ function buildChannelSheet(wb, activeRadios, plan, changedAPs, batchSummary, imp
     ];
 
     const cellFills = [
-      inBatch ? S.fBlue : S.fGray,
-      inBatch ? S.fBlue : null,
-      null, null, null,
-      pctFill(r.cu_total || 0),
-      pctFill(r.cu_total || 0),
-      pctFill(r.tx_retries_pct || 0),
-      (r.cci_count || 0) >= 10 ? S.fOrange : S.fGreen,
-      opt.impact >= 80 ? S.fRed : opt.impact >= 40 ? S.fOrange : opt.impact >= 15 ? S.fYellow : S.fGray,
-      changed ? S.fPurple : S.fGreen,
-      changed ? S.fOrange : null,
-      changed ? S.fPurple : null,
-      healthFill(r.health || '')
+      inBatch ? S.fBlue : S.fGray, // '#'
+      inBatch ? S.fBlue : null, // 'Batch'
+      null, // 'AP Name'
+      null, // 'Floor'
+      null, // 'Model'
+      null, // 'Band'
+      null, // 'Current Ch'
+      pctFill(r.cu_total || 0), // 'CU Total %'
+      pctFill(r.tx_retries_pct || 0), // 'TX Retry %'
+      (r.cci_count || 0) >= 10 ? S.fOrange : S.fGreen, // 'Co-Ch Peers'
+      opt.impact >= 80 ? S.fRed : opt.impact >= 40 ? S.fOrange : opt.impact >= 15 ? S.fYellow : S.fGray, // 'Health Score'
+      changed ? S.fPurple : S.fGreen, // 'Suggested Ch'
+      changed ? S.fOrange : null, // 'Change?'
+      changed ? S.fPurple : null, // 'Band Changed'
+      healthFill(r.health || '') // 'Health'
     ];
 
     const row = ws.getRow(rankCounter + 3);
@@ -286,7 +278,7 @@ function buildChannelSheet(wb, activeRadios, plan, changedAPs, batchSummary, imp
       const cell = row.getCell(ci + 1);
       applyCell(cell, v, cellFills[ci]);
       if (ci === 1) cell.font = { ...S.fntNormal, bold: inBatch, color: inBatch ? { argb: 'FFFFFFFF' } : undefined };
-      if (ci === 6 || ci === 7) cell.numFmt = '0.0"%"';
+      if (ci === 7 || ci === 8) cell.numFmt = '0.0"%"';
     });
     row.height = 18;
   });
@@ -456,7 +448,7 @@ async function generateXlsx(diagnosticsData, options = {}) {
   const channelSummary = (diagnosticsData.channels || {}).summary || {};
   const clients        = (diagnosticsData.clients  || {}).clients || [];
   const clientSummary  = (diagnosticsData.clients  || {}).summary || {};
-  const aps            = diagnosticsData.aps || buildApsFromRadios(radios);
+  const aps            = diagnosticsData.aps || [];
 
   // Run the constrained batch optimizer
   const result = runConstrainedOptimizer(radios, channelSummary, aps, options);

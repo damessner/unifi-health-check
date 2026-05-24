@@ -73,14 +73,21 @@ function channelsOverlap5(ch1, bw1, ch2, bw2) {
 
 function inferFloor(name = '', index = 0) {
   const n = String(name).toUpperCase();
-  if (n.includes('EG') || n.includes('GROUND') || n.includes('ERDGESCHOSS')) return 'EG';
-  if (n.includes('1OG') || n.includes('1.OG') || n.includes('FIRST')) return '1OG';
-  if (n.includes('2OG') || n.includes('2.OG') || n.includes('SECOND')) return '2OG';
+  // German + English ground floor
+  if (/EG\b|GROUND|ERDGESCHOSS|0OG|0\.OG/.test(n)) return 'EG';
+  // German + English first floor
+  if (/1OG\b|1\.OG|FIRST|1ST/.test(n)) return '1OG';
+  // German + English second floor
+  if (/2OG\b|2\.OG|SECOND|2ND/.test(n)) return '2OG';
+  // Numeric pattern: FG-0, Floor-1, etc.
+  const numMatch = n.match(/[FG][_\-\s]*(\d+)/i);
+  if (numMatch) {
+    const num = parseInt(numMatch[1], 10);
+    if (num === 0) return 'EG';
+    if (num === 1) return '1OG';
+    if (num === 2) return '2OG';
+  }
   return ['EG', '1OG', '2OG'][index % 3];
-}
-
-function floorToOffset(floor) {
-  return { EG: 0, '1OG': 1, '2OG': 2 }[floor] || 0;
 }
 
 // ── Proximity graph builder (server-side replica of frontend) ─────────────────
@@ -257,58 +264,6 @@ function scoreCombo(ap, ch24, ch5, vLoad24, vLoad5, proximityGraph, floorAssignm
   return score;
 }
 
-// ── Before/After Metrics Computer ─────────────────────────────────────────────
-
-function computeMetrics(radios) {
-  let sumCu24 = 0, count24 = 0, maxCu24 = 0;
-  let sumCu5 = 0, count5 = 0, maxCu5 = 0;
-  let totalCci = 0;
-  let congestedCount = 0;
-  let warningCount = 0;
-  const chCounts24 = {};
-  const chCounts5 = {};
-
-  radios.forEach(r => {
-    const cu = r.cu_total || 0;
-    const cci = r.cci_count || 0;
-    if (r.band === '2.4GHz' || r.radio === 'ng') {
-      sumCu24 += cu;
-      count24++;
-      if (cu > maxCu24) maxCu24 = cu;
-      chCounts24[String(r.channel)] = (chCounts24[String(r.channel)] || 0) + 1;
-    } else {
-      sumCu5 += cu;
-      count5++;
-      if (cu > maxCu5) maxCu5 = cu;
-      chCounts5[String(r.channel)] = (chCounts5[String(r.channel)] || 0) + 1;
-    }
-    totalCci += cci;
-    if (cu > 75 || cci > 12) congestedCount++;
-    else if (cu > 50 || cci > 4) warningCount++;
-  });
-
-  const vals24 = Object.values(chCounts24);
-  const vals5 = Object.values(chCounts5);
-  const avg24 = vals24.length ? vals24.reduce((a, b) => a + b, 0) / vals24.length : 0;
-  const avg5 = vals5.length ? vals5.reduce((a, b) => a + b, 0) / vals5.length : 0;
-  const var24 = vals24.length ? vals24.reduce((s, v) => s + (v - avg24) ** 2, 0) / vals24.length : 0;
-  const var5 = vals5.length ? vals5.reduce((s, v) => s + (v - avg5) ** 2, 0) / vals5.length : 0;
-
-  return {
-    avgCu24: Math.round(sumCu24 / (count24 || 1)),
-    maxCu24,
-    avgCu5: Math.round(sumCu5 / (count5 || 1)),
-    maxCu5,
-    totalCci,
-    congestedCount,
-    warningCount,
-    chVar24: Math.round(var24 * 10) / 10,
-    chVar5: Math.round(var5 * 10) / 10,
-    channelCounts24: chCounts24,
-    channelCounts5: chCounts5,
-  };
-}
-
 // ── Main Optimizer ───────────────────────────────────────────────────────────
 
 /**
@@ -366,8 +321,48 @@ function runConstrainedOptimizer(radios, channelSummary, aps, options = {}) {
   // Select top N APs for optimization
   const candidates = apList.slice(0, maxChanges);
 
-  // Compute BEFORE metrics
-  const beforeMetrics = computeMetrics(radios);
+  // Compute BEFORE metrics inline from radios (cci_count, cu_total already set by analyzer)
+  let befSumCu24 = 0, befCount24 = 0, befMaxCu24 = 0;
+  let befSumCu5 = 0, befCount5 = 0, befMaxCu5 = 0;
+  let befTotalCci = 0;
+  let befCongested = 0;
+  let befWarning = 0;
+
+  radios.forEach(r => {
+    const cu = r.cu_total || 0;
+    const cci = r.cci_count || 0;
+    if (r.band === '2.4GHz' || r.radio === 'ng') {
+      befSumCu24 += cu; befCount24++; if (cu > befMaxCu24) befMaxCu24 = cu;
+    } else {
+      befSumCu5 += cu; befCount5++; if (cu > befMaxCu5) befMaxCu5 = cu;
+    }
+    befTotalCci += cci;
+    if (cu > 75 || cci > 12) befCongested++;
+    else if (cu > 50 || cci > 4) befWarning++;
+  });
+
+  const befChCounts24 = channelSummary.channelCounts24 || {};
+  const befChCounts5 = channelSummary.channelCounts5 || {};
+  const befVals24 = Object.values(befChCounts24);
+  const befVals5 = Object.values(befChCounts5);
+  const befAvg24 = befVals24.length ? befVals24.reduce((a, b) => a + b, 0) / befVals24.length : 0;
+  const befAvg5 = befVals5.length ? befVals5.reduce((a, b) => a + b, 0) / befVals5.length : 0;
+  const befVar24 = befVals24.length ? befVals24.reduce((s, v) => s + (v - befAvg24) ** 2, 0) / befVals24.length : 0;
+  const befVar5 = befVals5.length ? befVals5.reduce((s, v) => s + (v - befAvg5) ** 2, 0) / befVals5.length : 0;
+
+  const beforeMetrics = {
+    avgCu24: Math.round(befSumCu24 / (befCount24 || 1)),
+    maxCu24: befMaxCu24,
+    avgCu5: Math.round(befSumCu5 / (befCount5 || 1)),
+    maxCu5: befMaxCu5,
+    totalCci: befTotalCci,
+    congestedCount: befCongested,
+    warningCount: befWarning,
+    chVar24: Math.round(befVar24 * 10) / 10,
+    chVar5: Math.round(befVar5 * 10) / 10,
+    channelCounts24: befChCounts24,
+    channelCounts5: befChCounts5,
+  };
 
   // Initialize virtual load maps from current channel counts
   const vLoad24 = Object.assign({}, channelSummary.channelCounts24 || {});

@@ -21,6 +21,18 @@ const adminSessions = new Map(); // token → { createdAt, csrfToken }
 const loginAttempts = new Map(); // ip → { count, resetAt }
 const LOGIN_MAX_ATTEMPTS = 5;
 const LOGIN_WINDOW_MS = 60 * 1000; // 1 minute
+const SESSION_MAX_AGE_MS = 8 * 60 * 60 * 1000; // 8 hours
+
+// Periodic cleanup of stale sessions and rate-limit entries
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, session] of adminSessions) {
+    if (now - session.createdAt > SESSION_MAX_AGE_MS) adminSessions.delete(token);
+  }
+  for (const [ip, record] of loginAttempts) {
+    if (now > record.resetAt) loginAttempts.delete(ip);
+  }
+}, 5 * 60 * 1000).unref(); // every 5 minutes, doesn't keep process alive
 
 function checkRateLimit(ip) {
   const now = Date.now();
@@ -249,7 +261,10 @@ app.get('/api/diagnostics', async (req, res) => {
  */
 app.get('/api/export/xlsx', async (req, res) => {
   try {
-    const { devices, clients } = await getFreshData(false);
+    const force = req.query.force === 'true';
+    const maxChanges = parseInt(req.query.maxChanges, 10) || parseInt(process.env.OPT_MAX_CHANGES, 10) || 8;
+
+    const { devices, clients } = await getFreshData(force);
     const channelAnalysis = analyzer.analyzeChannels(devices);
     const clientAnalysis  = analyzer.analyzeClients(clients, devices);
 
@@ -261,7 +276,6 @@ app.get('/api/export/xlsx', async (req, res) => {
       aps: apsModel
     };
 
-    const maxChanges = parseInt(process.env.OPT_MAX_CHANGES, 10) || 8;
     const buffer = await xlsxExporter.generateXlsx(diagnosticsData, { maxChanges });
     const ts = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
     const filename = `unifi_optimization_${ts}.xlsx`;
@@ -335,7 +349,7 @@ app.post('/api/auth/login', (req, res) => {
     const csrfToken = generateCSRFToken();
     adminSessions.set(token, { createdAt: Date.now(), csrfToken });
 
-    const cookieFlags = `admin_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800`;
+    const cookieFlags = `admin_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=28800`;
     const secureFlag = process.env.NODE_ENV === 'production' ? '; Secure' : '';
     res.setHeader('Set-Cookie', cookieFlags + secureFlag);
     return res.json({ success: true, token, csrfToken });
@@ -351,7 +365,7 @@ app.post('/api/auth/logout', (req, res) => {
   const token = extractSessionToken(req);
   if (token) adminSessions.delete(token);
 
-  res.setHeader('Set-Cookie', 'admin_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0');
+  res.setHeader('Set-Cookie', 'admin_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
   return res.json({ success: true });
 });
 

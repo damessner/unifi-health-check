@@ -1395,22 +1395,10 @@ function renderOptimalGrid() {
 
   // Pre-calculate all values to sort by Pareto Impact Score (20-80 Rule)
   apArray.forEach((ap, index) => {
-    let floor = 'EG';
-    let floorOffset = 0;
-    const name = ap.name.toUpperCase();
-    if (name.includes('EG') || name.startsWith('E-') || name.includes('ERDGESCHOSS')) {
-      floor = 'EG';
-      floorOffset = 0;
-    } else if (name.includes('1OG') || name.includes('1.OG') || name.includes('FIRST')) {
-      floor = '1OG';
-      floorOffset = 3;
-    } else if (name.includes('2OG') || name.includes('2.OG') || name.includes('SECOND')) {
-      floor = '2OG';
-      floorOffset = 6;
-    } else {
-      floor = 'Other';
-      floorOffset = 9;
-    }
+    const floorKey = inferFloorFromName(ap.name, index);
+    const floorOffsetMap = { eg: 0, '1og': 3, '2og': 3 };
+    let floor = floorKey === 'eg' ? 'EG' : floorKey === '1og' ? '1OG' : '2OG';
+    let floorOffset = floorOffsetMap[floorKey] || 0;
 
     const optCh24 = ch24Options[(index + Math.floor(floorOffset / 3)) % ch24Options.length];
     const optCh5 = ch5Options[(index + floorOffset) % ch5Options.length];
@@ -1829,14 +1817,22 @@ async function rescanAndReoptimize() {
       apiData = JSON.parse(JSON.stringify(rawApiData));
     }
 
-    renderAllTabs();
+    // Update controller status card immediately (non-blocking, no grid flash)
+    updateControllerStatusCard(true);
+    const lastUpdatedLabel = document.getElementById('last-updated');
+    if (lastUpdatedLabel) {
+      lastUpdatedLabel.textContent = `Last updated: ${new Date(payload.timestamp).toLocaleTimeString()}`;
+    }
 
-    showToast('Re-scan complete. Fresh controller telemetry loaded.', 'success');
     setWorkflowStep('rescan', 'done');
     setWorkflowStep('reopt', 'active');
 
-    // Now re-run optimizer on fresh data
+    // Run optimizer first, THEN render everything once
     await runBatchOptimizer(true);
+
+    // Single render pass with both fresh data and optimizer results
+    renderAllTabs();
+    updateControllerStatusCard(true);
 
   } catch (err) {
     console.error('[Re-scan] Failed:', err);
@@ -2979,9 +2975,16 @@ function setAutoRefresh(seconds) {
  */
 function inferFloorFromName(name = '', index = 0) {
   const n = String(name).toUpperCase();
-  if (n.includes('EG') || n.includes('GROUND')) return 'eg';
-  if (n.includes('1OG') || n.includes('1.OG') || n.includes('FIRST')) return '1og';
-  if (n.includes('2OG') || n.includes('2.OG') || n.includes('SECOND')) return '2og';
+  if (/EG\b|GROUND|ERDGESCHOSS|0OG|0\.OG/.test(n)) return 'eg';
+  if (/1OG\b|1\.OG|FIRST|1ST/.test(n)) return '1og';
+  if (/2OG\b|2\.OG|SECOND|2ND/.test(n)) return '2og';
+  const numMatch = n.match(/[FG][_\-\\s]*(\d+)/i);
+  if (numMatch) {
+    const num = parseInt(numMatch[1], 10);
+    if (num === 0) return 'eg';
+    if (num === 1) return '1og';
+    if (num === 2) return '2og';
+  }
   return ['eg', '1og', '2og'][index % 3];
 }
 

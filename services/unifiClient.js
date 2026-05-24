@@ -231,17 +231,22 @@ class UnifiClient {
 const MOCK_DEVICES = buildMockDevices(12);
 const MOCK_CLIENTS = buildMockClients(MOCK_DEVICES, 60);
 
+// MOCK_STACK_MODE simulates a real school deployment where most APs
+// are stacked on 5 GHz channels 40/44 (DFS channels excluded by controller)
 function buildMockDevices(count) {
   const devices = [];
   const channels24 = [1, 6, 11];
-  const channels5 = [36, 40, 44, 48, 100, 104, 108, 112, 116, 120];
+  const stackMode = process.env.MOCK_STACK_MODE === 'true';
+  // In stack mode, 80% of APs get 40 or 44 (the school's real problem)
+  const channels5Stacked = [40, 40, 40, 40, 44, 44, 44, 36, 48, 100];
+  const channels5Normal  = [36, 40, 44, 48, 100, 104, 108, 112, 116, 120];
 
   for (let i = 0; i < count; i++) {
     const id = String(i + 1).padStart(2, '0');
     const mac = `02:00:00:00:00:${id}`;
     const channel24 = channels24[i % channels24.length];
-    const channel5 = channels5[i % channels5.length];
-    const utilBase = 25 + (i * 7) % 55;
+    const channel5 = stackMode ? channels5Stacked[i % channels5Stacked.length] : channels5Normal[i % channels5Normal.length];
+    const utilBase = stackMode ? 60 + (i * 8) % 35 : 25 + (i * 7) % 55;
 
     devices.push({
       _id: `mock-ap-${id}`,

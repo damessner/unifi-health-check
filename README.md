@@ -106,29 +106,40 @@ The application is configured using a `.env` file located in the root of the pro
 | `CACHE_EXPIRY_SEC` | `15` | Caching duration (in seconds) of controller data to limit load. |
 | `API_TOKEN` | _(empty)_ | Optional API protection token; when set, send it in `x-api-token` header for all `/api/*` calls. |
 | `OPT_MAX_CHANGES` | `8` | Maximum APs the batch optimizer suggests per round. Lower = fewer changes, less risk. |
+| `NODE_ENV` | _(none)_ | Set to `production` to enable `Secure` flag on session cookies (requires HTTPS). |
+| `ADMIN_USER` | `admin` | Dashboard admin username for login (change the default). |
+| `ADMIN_PASS` | `admin` | Dashboard admin password for login (change the default). |
 | `UNIFI_ALLOW_SELF_SIGNED` | `false` | Keep `false` for production; only set `true` if you intentionally trust a self-signed controller certificate. |
 
 ---
 
 ## 🛠️ Management & Control Commands
 
-Navigate to `/opt/unifi-health-check` (or your manual installation folder) to execute these management commands:
+Inside your container (e.g. `docker exec -it unifi-health-check sh` or `pct enter <VMID>` on Proxmox), navigate to `/opt/unifi-health-check`:
 
-* **View Live Container Logs**:
+* **Pull latest changes and rebuild**:
   ```bash
-  docker compose logs -f
+  cd /opt/unifi-health-check && git pull && docker compose up -d --build
   ```
-* **Restart the Service**:
+* **Quick restart (no rebuild, keeps current code)**:
   ```bash
-  docker compose restart
+  cd /opt/unifi-health-check && docker compose restart
   ```
-* **Stop and Remove Container**:
+* **View live logs**:
   ```bash
-  docker compose down
+  cd /opt/unifi-health-check && docker compose logs -f
   ```
-* **Update to the Latest Release**:
+* **Stop the service**:
   ```bash
-  git pull && docker compose up -d --build
+  cd /opt/unifi-health-check && docker compose down
+  ```
+* **Auto-updater (preserves your .env, pulls latest, rebuilds)**:
+  ```bash
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/damessner/unifi-health-check/main/setup-lxc.sh)"
+  ```
+* **Force-pull without losing .env changes**:
+  ```bash
+  cd /opt/unifi-health-check && git fetch origin && git reset --hard origin/main && docker compose up -d --build
   ```
 
 ---
@@ -142,7 +153,31 @@ The internal Node.js server exposes these diagnostic endpoints:
 - **`GET /api/optimize`**: Runs the constrained batch optimizer. Query params: `?maxChanges=8` (default 8), `?force=true` (bypass cache). Returns an AP-level joint-band channel plan, changed AP list, and before/after improvement estimates.
 - **`GET /api/export/xlsx`**: Generates a multi-sheet XLSX report (Channel Optimization, Client Issues, Summary, Improvement Report) using the constrained batch optimizer.
 
+**Admin endpoints** (require authentication + CSRF token):
+- **`POST /api/auth/login`**: Rate-limited (5 attempts/min/IP). Returns `{ token, csrfToken }`. Send `x-csrf-token` header on subsequent admin calls.
+- **`POST /api/admin/change-channel`**: Requires `adminAuth` + `verifyCSRF` middleware. Sends channel change to the UniFi controller.
+
 If `API_TOKEN` is configured, include `x-api-token: <token>` for all `/api/*` requests.
+
+---
+
+## 🔒 Security Hardening (v2.x)
+
+The following hardening measures are baked into the application:
+
+| # | Measure | Location |
+|---|---------|----------|
+| 1 | Session tokens now use `crypto.randomBytes` instead of `Math.random()` | `server.js:334` |
+| 2 | Rate limiting on login endpoint (5 attempts/min/IP, returns 429) | `server.js:21-40` |
+| 3 | CSRF protection on admin endpoints (`x-csrf-token` header required) | `server.js:48-55, 370` |
+| 4 | `Secure` flag on session cookies when `NODE_ENV=production` | `server.js:337-339` |
+| 5 | No mutable global state in optimizer (concurrency-safe) | `services/optimizer.js` |
+| 6 | HTTPS request timeout (15s) to prevent event loop hangs | `services/unifiClient.js:40,53-56` |
+| 7 | Real API failures now throw errors instead of silently serving demo data | `services/unifiClient.js:139-157` |
+| 8 | Expired admin sessions cleaned on logout | `server.js:352` |
+| 9 | Request body size limit (`express.json({ limit: '1mb' })`) | `server.js:15` |
+
+> **⚠️ Important:** Change `ADMIN_USER` and `ADMIN_PASS` from the defaults (`admin`/`admin`) in your `.env` file before exposing the dashboard.
 
 ---
 
@@ -166,7 +201,9 @@ This project is open-source and licensed under the [MIT License](LICENSE).
 Current implementation integrity (verified in this repository):
 
 - ✅ Implemented today: real-time diagnostics API, RF/channel analyzer, iPad/Apple client diagnostics, in-memory history ring buffer, speed/capacity widgets, **constrained joint-band batch optimizer** (AP-level, proximity-aware, change-limited), **iterative recheck workflow** (round counter, Re-scan & Re-optimize, batch history in localStorage, cumulative progress bar), XLSX export with improvement report, batch optimizer UX (grid highlighting, channel diff badges, select-all batch, before/after comparison), butterfly-effect sandbox simulator.
-- ❌ Not implemented yet: webhook/email alerting, sticky-client roaming diagnostics, classroom SLA grouping, safe write-back controller actions, airtime fairness auditor, DHCP pool exhaustion predictor, SQLite persistent time-series, rogue AP radar, teacher portal/reporting endpoint.
+- ✅ **Security hardening**: cryptographically secure session tokens, login rate limiting, CSRF protection on admin endpoints, `Secure` cookie flag in production, request body size limit, HTTPS timeout handling.
+- ✅ **Performance improvements**: single-pass client analysis (reduced from 6+ iterations to 1), `renderAllTabs()` deduplication, 5 GHz overlap defaults to 80 MHz for modern APs.
+- ❌ Not implemented yet: webhook/email alerting, sticky-client roaming diagnostics, classroom SLA grouping, airtime fairness auditor, DHCP pool exhaustion predictor, SQLite persistent time-series, rogue AP radar, teacher portal/reporting endpoint.
 
 Planned advanced extensions are documented in **`/STRATEGIC_ROADMAP.md`**.
 
