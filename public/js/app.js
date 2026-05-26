@@ -1723,10 +1723,18 @@ function saveOptimizerState() {
   } catch (e) { /* quota exceeded, ignore */ }
 }
 
+function buildOptimizerPlanSignature(changedAPs = []) {
+  if (!Array.isArray(changedAPs) || changedAPs.length === 0) return '';
+  return changedAPs
+    .map(ap => `${ap.mac}:${ap.newNgCh ?? '-'}:${ap.newNaCh ?? '-'}`)
+    .sort()
+    .join('|');
+}
+
 /**
  * Run the constrained batch optimizer via the API.
  */
-async function runBatchOptimizer(forceRefresh = false) {
+async function runBatchOptimizer(forceRefresh = true) {
   const btn = document.getElementById('btn-run-optimizer');
   const rescanBtn = document.getElementById('btn-rescan-reopt');
   const maxChanges = parseInt(document.getElementById('opt-max-changes')?.value || '8', 10);
@@ -1748,6 +1756,18 @@ async function runBatchOptimizer(forceRefresh = false) {
     const payload = await res.json();
     if (!payload.success) throw new Error(payload.error || 'Optimization failed');
 
+    const planSignature = buildOptimizerPlanSignature(payload.changedAPs);
+    const lastRound = optimizerHistory[optimizerHistory.length - 1];
+    if (lastRound && lastRound.planSignature === planSignature && payload.changedAPs.length > 0) {
+      optimizerData = payload;
+      console.log('[Optimizer] Duplicate batch detected, suppressing round increment.');
+      updateBatchOptimizerDisplay();
+      renderOptimalGrid();
+      updateBatchHistoryUI();
+      showToast('Same batch as last run. Wait for AP provisioning to finish, then re-scan and re-optimize.', 'warning');
+      return;
+    }
+
     currentRound++;
     saveOptimizerState();
 
@@ -1767,7 +1787,8 @@ async function runBatchOptimizer(forceRefresh = false) {
       improvement: payload.improvementReport.estimatedImprovementPct,
       cciReduction: payload.improvementReport.deltas.cciReduction,
       maxChanges,
-      totalAPs: payload.totalAPs
+      totalAPs: payload.totalAPs,
+      planSignature
     });
     saveOptimizerState();
 
