@@ -1763,7 +1763,8 @@ async function runBatchOptimizer(forceRefresh = true) {
     if (!payload.success) throw new Error(payload.error || 'Optimization failed');
 
     const planSignature = buildOptimizerPlanSignature(payload.changedAPs);
-    const lastRound = optimizerHistory[optimizerHistory.length - 1];
+    const history = Array.isArray(optimizerHistory) ? optimizerHistory : [];
+    const lastRound = history[history.length - 1];
     if (planSignature && lastRound && lastRound.planSignature === planSignature) {
       optimizerData = payload;
       console.log('[Optimizer] Duplicate batch detected, suppressing round increment.');
