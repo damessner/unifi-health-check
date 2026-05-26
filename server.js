@@ -178,6 +178,7 @@ function buildApsModel(channelAnalysis) {
     }
     map[r.apMac].radios[r.radio] = {
       channel: r.channel,
+      configured_channel: r.configured_channel,
       cu_total: r.cu_total,
       cu_self_rx: r.cu_self_rx,
       cu_self_tx: r.cu_self_tx,

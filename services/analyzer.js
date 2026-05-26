@@ -84,6 +84,7 @@ class NetworkAnalyzer {
             num_sta: rs.num_sta || 0,
             
             // Detailed configured/live radio properties
+            configured_channel: rSetting.channel !== undefined ? rSetting.channel : null,
             tx_power: rs.tx_power || null, // actual operational power
             tx_power_mode: rSetting.tx_power_mode || 'auto',
             configured_tx_power: rSetting.tx_power !== undefined ? rSetting.tx_power : null,
@@ -162,6 +163,11 @@ class NetworkAnalyzer {
         avgUtil5,
         channelCounts24: bands['2.4GHz'].channels,
         channelCounts5: bands['5GHz'].channels,
+        configDriftCount: apRadios.filter(r => (
+          r.configured_channel !== null &&
+          r.configured_channel !== undefined &&
+          Number(r.configured_channel) !== Number(r.channel)
+        )).length,
         congestedRadiosCount: apRadios.filter(r => r.health === 'critical').length,
         warningRadiosCount: apRadios.filter(r => r.health === 'warning').length
       },

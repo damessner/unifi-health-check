@@ -163,14 +163,14 @@ function buildChannelSheet(wb, activeRadios, plan, changedAPs, batchSummary, imp
   const now = new Date().toLocaleString('de-AT');
 
   // Title row
-  ws.mergeCells('A1:O1');
+  ws.mergeCells('A1:P1');
   const title = ws.getCell('A1');
   title.value = `Constrained Batch Channel Optimization Plan  •  ${now}`;
   title.font = S.fntTitle; title.fill = S.fHeader; title.alignment = S.center;
   ws.getRow(1).height = 28;
 
   // Subtitle
-  ws.mergeCells('A2:O2');
+  ws.mergeCells('A2:P2');
   const sub = ws.getCell('A2');
   sub.value = `BATCH MODE: ${changedAPs.length} APs selected for change (max ${batchSummary.maxChanges} per round). ` +
     `Fix these first, then re-scan and re-run to get the next batch. ${improvementReport.estimatedImprovementPct}% estimated improvement.`;
@@ -186,7 +186,8 @@ function buildChannelSheet(wb, activeRadios, plan, changedAPs, batchSummary, imp
     { header: 'Floor',        key: 'floor',   width: 7  },
     { header: 'Model',        key: 'model',   width: 14 },
     { header: 'Band',         key: 'band',    width: 8  },
-    { header: 'Current Ch',   key: 'curCh',   width: 12 },
+    { header: 'Live Ch',      key: 'liveCh',  width: 10 },
+    { header: 'Config Ch',    key: 'cfgCh',   width: 10 },
     { header: 'CU Total %',   key: 'cu',      width: 11 },
     { header: 'TX Retry %',   key: 'retry',   width: 11 },
     { header: 'Co-Ch Peers',  key: 'cci',     width: 12 },
@@ -240,11 +241,16 @@ function buildChannelSheet(wb, activeRadios, plan, changedAPs, batchSummary, imp
     // Get floor from the changed APs list
     const apChange = changedAPs.find(c => c.mac === r.apMac);
     const floor = apChange ? apChange.floor : '—';
+    const configuredCh = (r.configured_channel !== undefined && r.configured_channel !== null)
+      ? r.configured_channel
+      : '—';
+    const channelDrift = configuredCh !== '—' && Number(configuredCh) !== Number(r.channel);
 
     const rowData = [
       rankCounter,
       inBatch ? `Batch 1` : '—',
       r.apName, floor, r.model, r.band, r.channel,
+      configuredCh,
       r.cu_total || 0,
       Math.round((r.tx_retries_pct || 0) * 10) / 10,
       r.cci_count || 0,
@@ -262,7 +268,8 @@ function buildChannelSheet(wb, activeRadios, plan, changedAPs, batchSummary, imp
       null, // 'Floor'
       null, // 'Model'
       null, // 'Band'
-      null, // 'Current Ch'
+      null, // 'Live Ch'
+      channelDrift ? S.fOrange : S.fGreen, // 'Config Ch'
       pctFill(r.cu_total || 0), // 'CU Total %'
       pctFill(r.tx_retries_pct || 0), // 'TX Retry %'
       (r.cci_count || 0) >= 10 ? S.fOrange : S.fGreen, // 'Co-Ch Peers'
@@ -278,14 +285,14 @@ function buildChannelSheet(wb, activeRadios, plan, changedAPs, batchSummary, imp
       const cell = row.getCell(ci + 1);
       applyCell(cell, v, cellFills[ci]);
       if (ci === 1) cell.font = { ...S.fntNormal, bold: inBatch, color: inBatch ? { argb: 'FFFFFFFF' } : undefined };
-      if (ci === 7 || ci === 8) cell.numFmt = '0.0"%"';
+      if (ci === 8 || ci === 9) cell.numFmt = '0.0"%"';
     });
     row.height = 18;
   });
 
   // Add batch summary row at the bottom
   const summaryStartRow = sortedRadios.length + 5;
-  ws.mergeCells(`A${summaryStartRow}:O${summaryStartRow}`);
+  ws.mergeCells(`A${summaryStartRow}:P${summaryStartRow}`);
   const summaryCell = ws.getCell(`A${summaryStartRow}`);
   summaryCell.value = batchSummary.recommendation;
   summaryCell.font = { name: 'Calibri', size: 9, italic: true, color: { argb: 'FF27AE60' } };
@@ -389,6 +396,9 @@ function buildSummarySheet(wb, channelSummary, clientSummary, batchSummary, impr
     [`  Max changes per round`, batchSummary.maxChanges],
     [`  Est. Improvement`, `${improvementReport.estimatedImprovementPct}%`],
     [`  Remaining APs to check`, batchSummary.remainingWorstAPs],
+    [null, null],
+    ['── Live vs Config Drift ──', ''],
+    ['Radios with channel drift', channelSummary.configDriftCount || 0],
     [null, null],
     ['── Channel Health ──', ''],
     ['Total APs',              channelSummary.totalAPs],
