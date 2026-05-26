@@ -423,12 +423,30 @@ app.get('/api/optimize/progress', async (req, res) => {
   try {
     const force = req.query.force === 'true';
     const rawMax = parseInt(req.query.maxChanges, 10);
-    const maxChanges = (Number.isFinite(rawMax) && rawMax > 0 && rawMax <= 100) ? rawMax : 10;
+    const maxChanges = (Number.isFinite(rawMax) && rawMax > 0 && rawMax <= 100) ? rawMax : config.opt.maxChanges;
+    const rawMin = parseInt(req.query.minImprovement, 10);
+    const minImprovementThreshold = (Number.isFinite(rawMin) && rawMin >= 0 && rawMin <= 100) ? rawMin : 5;
     const rawBudget = parseInt(req.query.timeBudgetMs, 10);
     const timeBudgetMs = (Number.isFinite(rawBudget) && rawBudget >= 1000 && rawBudget <= 28800000) ? rawBudget : 150000;
+    const rawGen = parseInt(req.query.generationLimit, 10);
+    const generationLimit = (Number.isFinite(rawGen) && rawGen >= 100 && rawGen <= 500000) ? rawGen : 100000;
     const searchMode = String(req.query.searchMode || 'ga').toLowerCase();
     const rawPop = parseInt(req.query.populationSize, 10);
     const populationSize = (Number.isFinite(rawPop) && rawPop >= 10 && rawPop <= 200) ? rawPop : (searchMode === 'deep' ? 100 : 40);
+    const rawMutation = Number(req.query.mutationRate);
+    const mutationRate = (Number.isFinite(rawMutation) && rawMutation > 0 && rawMutation <= 1) ? rawMutation : 0.25;
+    const rawElite = parseInt(req.query.eliteCount, 10);
+    const eliteCount = (Number.isFinite(rawElite) && rawElite >= 1 && rawElite <= 50)
+      ? rawElite
+      : Math.max(2, Math.floor(populationSize / 10));
+    const rawStag = parseInt(req.query.stagnationLimit, 10);
+    const stagnationLimit = (Number.isFinite(rawStag) && rawStag >= 10 && rawStag <= 5000) ? rawStag : 200;
+    const rawConvWindow = parseInt(req.query.convergenceWindow, 10);
+    const convergenceWindow = (Number.isFinite(rawConvWindow) && rawConvWindow >= 20 && rawConvWindow <= 2000) ? rawConvWindow : 300;
+    const rawConvThreshold = Number(req.query.convergenceThreshold);
+    const convergenceThreshold = (Number.isFinite(rawConvThreshold) && rawConvThreshold > 0 && rawConvThreshold <= 10)
+      ? rawConvThreshold
+      : 0.5;
 
     const { devices, clients } = await getFreshData(force);
     const channelAnalysis = analyzer.analyzeChannels(devices);
@@ -451,8 +469,15 @@ app.get('/api/optimize/progress', async (req, res) => {
     // Send initial connected event
     sendEvent('connected', {
       maxChanges,
+      minImprovementThreshold,
       timeBudgetMs,
+      generationLimit,
       populationSize,
+      mutationRate,
+      eliteCount,
+      stagnationLimit,
+      convergenceWindow,
+      convergenceThreshold,
       totalAPs: apsModel.length,
       totalRadios: channelAnalysis.radios.length,
     });
@@ -476,11 +501,16 @@ app.get('/api/optimize/progress', async (req, res) => {
         },
         max_changes: maxChanges,
         time_budget_ms: timeBudgetMs,
+        generation_limit: generationLimit,
         population_size: populationSize,
-        mutation_rate: 0.25,
-        elite_count: Math.max(2, Math.floor(populationSize / 10)),
-        stagnation_limit: 200,
-        convergence_window: 300,
+        mutation_rate: mutationRate,
+        elite_count: eliteCount,
+        stagnation_limit: stagnationLimit,
+        convergence_window: convergenceWindow,
+        convergence_threshold: convergenceThreshold,
+        min_improvement_threshold: minImprovementThreshold,
+        enforce_min_improvement: true,
+        search_mode: searchMode,
       };
 
       const proc = spawn(rustBin, [], { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -545,13 +575,13 @@ app.get('/api/optimize/progress', async (req, res) => {
         plan: completeData.plan || {},
         changedAPs: (completeData.changedAPs || []).map(ap => ({
           mac: ap.mac, name: ap.name, floor: ap.floor || '—',
-          healthScore: ap.health_score || 0,
+          healthScore: ap.healthScore || 0,
           changes: ap.changes || '',
-          oldNgCh: ap.old_ng_ch, newNgCh: ap.new_ng_ch,
-          oldNaCh: ap.old_na_ch, newNaCh: ap.new_na_ch,
+          oldNgCh: ap.oldNgCh, newNgCh: ap.newNgCh,
+          oldNaCh: ap.oldNaCh, newNaCh: ap.newNaCh,
           cu: ap.cu || 0, cci: ap.cci || 0,
         })),
-        totalAPs: completeData.total_aps || channelAnalysis.radios.length,
+        totalAPs: completeData.totalAPs || apsModel.length,
         candidatesConsidered: (completeData.changedAPs || []).length,
         batchSummary: completeData.batchSummary || {
           maxChanges, changesSuggested: (completeData.changedAPs || []).length,
@@ -559,7 +589,7 @@ app.get('/api/optimize/progress', async (req, res) => {
           recommendation: 'Rust optimizer completed.',
         },
         improvementReport: completeData.improvementReport || null,
-        proximityGraph: buildProximityGraph(apsModel),
+        proximityGraph: optimizer.buildProximityGraph(apsModel),
         searchMeta: completeData.searchMeta || { mode: 'rust' },
       };
 
@@ -570,7 +600,20 @@ app.get('/api/optimize/progress', async (req, res) => {
         channelAnalysis.radios,
         channelAnalysis.summary,
         apsModel,
-        { maxChanges, timeBudgetMs, populationSize, searchMode },
+        {
+          maxChanges,
+          minImprovementThreshold,
+          enforceMinImprovement: true,
+          timeBudgetMs,
+          generationLimit,
+          populationSize,
+          mutationRate,
+          eliteCount,
+          stagnationLimit,
+          convergenceWindow,
+          convergenceThreshold,
+          searchMode,
+        },
         (progress) => {
           sendEvent('progress', progress);
         }

@@ -1985,10 +1985,46 @@ async function runBatchOptimizer(forceRefresh = false) {
   const engineSelect = document.getElementById('opt-engine');
   const searchMode = engineSelect ? engineSelect.value : 'ga';
 
-  const timeBudgetMs = searchMode === 'deep' ? 14400000 : 240000; // 4h for deep, 4 min otherwise
-  const popSize = searchMode === 'deep' ? 100 : 40;
-
-  const label = searchMode === 'rust' ? 'Rust' : searchMode === 'deep' ? 'Deep (4h)' : 'GA (4 min)';
+  const engineProfiles = {
+    ga: {
+      label: 'GA (4 min)',
+      timeBudgetMs: 240000,
+      populationSize: 40,
+      generationLimit: 100000,
+      minImprovement: 5,
+      mutationRate: 0.25,
+      eliteCount: 4,
+      stagnationLimit: 200,
+      convergenceWindow: 300,
+      convergenceThreshold: 0.5,
+    },
+    deep: {
+      label: 'Deep (4h)',
+      timeBudgetMs: 14400000,
+      populationSize: 100,
+      generationLimit: 400000,
+      minImprovement: 3,
+      mutationRate: 0.2,
+      eliteCount: 8,
+      stagnationLimit: 500,
+      convergenceWindow: 600,
+      convergenceThreshold: 0.35,
+    },
+    rust: {
+      label: 'Rust',
+      timeBudgetMs: 240000,
+      populationSize: 60,
+      generationLimit: 150000,
+      minImprovement: 5,
+      mutationRate: 0.22,
+      eliteCount: 6,
+      stagnationLimit: 260,
+      convergenceWindow: 350,
+      convergenceThreshold: 0.45,
+    },
+  };
+  const profile = engineProfiles[searchMode] || engineProfiles.ga;
+  const label = profile.label;
 
   if (btn) {
     btn.disabled = true;
@@ -2002,8 +2038,15 @@ async function runBatchOptimizer(forceRefresh = false) {
   return new Promise((resolve, reject) => {
     const params = new URLSearchParams({
       maxChanges: String(maxChanges),
-      timeBudgetMs: String(timeBudgetMs),
-      populationSize: String(popSize),
+      minImprovement: String(profile.minImprovement),
+      timeBudgetMs: String(profile.timeBudgetMs),
+      generationLimit: String(profile.generationLimit),
+      populationSize: String(profile.populationSize),
+      mutationRate: String(profile.mutationRate),
+      eliteCount: String(profile.eliteCount),
+      stagnationLimit: String(profile.stagnationLimit),
+      convergenceWindow: String(profile.convergenceWindow),
+      convergenceThreshold: String(profile.convergenceThreshold),
       searchMode: searchMode,
       force: forceRefresh ? 'true' : 'false',
     });
@@ -2019,8 +2062,9 @@ async function runBatchOptimizer(forceRefresh = false) {
 
     gaEventSource.addEventListener('connected', (e) => {
       const data = JSON.parse(e.data);
-      addGaLogEntry(`Connected. ${data.totalAPs} APs, ${data.totalRadios} radios, ${data.populationSize} population.`, 'info');
-      addGaLogEntry('GA searching all channel combinations...', 'info');
+      addGaLogEntry(`Connected. ${data.totalAPs} APs, ${data.totalRadios} radios, pop ${data.populationSize}.`, 'info');
+      addGaLogEntry(`Engine=${searchMode}, genLimit=${data.generationLimit || profile.generationLimit}, minImp=${data.minImprovementThreshold || profile.minImprovement}%`, 'info');
+      addGaLogEntry('Searching all channel combinations...', 'info');
     });
 
     gaEventSource.addEventListener('progress', (e) => {
@@ -2110,7 +2154,10 @@ function processOptimizerResult(payload, maxChanges) {
   const gens = sm.generationsTried || sm.bestGeneration || 1;
   const durSec = sm.durationMs ? Math.max(1, Math.round(sm.durationMs / 1000)) : null;
   const pop = sm.populationSize ? `pop ${sm.populationSize}, ` : '';
-  const searchInfo = durSec ? ` (${pop}${gens} generations, ${durSec}s)` : '';
+  const stopReason = sm.stopReason ? `, stop ${String(sm.stopReason).replace(/_/g, ' ')}` : '';
+  const searchInfo = durSec
+    ? ` (${pop}${gens} generations, ${durSec}s${stopReason})`
+    : (stopReason ? ` (${stopReason.trim().replace(/^,\s*/, '')})` : '');
   showToast(`Round ${currentRound}: ${changedCount} APs selected, ~${imp}% estimated improvement${searchInfo}. Apply, then re-scan.`, 'success');
 
   // Re-enable buttons
@@ -2130,6 +2177,14 @@ async function runDeepOptimizer() {
   const rescanBtn = document.getElementById('btn-rescan-reopt');
   const maxChanges = parseInt(document.getElementById('opt-max-changes')?.value || '8', 10);
   const timeBudgetMs = 14400000; // 4 hours
+  const populationSize = 100;
+  const generationLimit = 400000;
+  const minImprovement = 3;
+  const mutationRate = 0.2;
+  const eliteCount = 8;
+  const stagnationLimit = 500;
+  const convergenceWindow = 600;
+  const convergenceThreshold = 0.35;
 
   if (btn) {
     btn.disabled = true;
@@ -2143,8 +2198,15 @@ async function runDeepOptimizer() {
   return new Promise((resolve, reject) => {
     const params = new URLSearchParams({
       maxChanges: String(maxChanges),
+      minImprovement: String(minImprovement),
       timeBudgetMs: String(timeBudgetMs),
-      populationSize: '100',
+      generationLimit: String(generationLimit),
+      populationSize: String(populationSize),
+      mutationRate: String(mutationRate),
+      eliteCount: String(eliteCount),
+      stagnationLimit: String(stagnationLimit),
+      convergenceWindow: String(convergenceWindow),
+      convergenceThreshold: String(convergenceThreshold),
       searchMode: 'deep',
       force: 'false',
     });
@@ -2153,7 +2215,8 @@ async function runDeepOptimizer() {
     showGaProgress();
     clearGaLog();
     addGaLogEntry('\u{1F680} Starting DEEP overnight optimization (4 hour search)...', 'info');
-    addGaLogEntry('Population: 100 \u00B7 Search mode: multi-phase deep GA', 'info');
+    addGaLogEntry(`Population: ${populationSize} \u00B7 Search mode: multi-phase deep GA`, 'info');
+    addGaLogEntry(`Gen limit: ${generationLimit}, Min improvement: ${minImprovement}%`, 'info');
     addGaLogEntry('The server will explore billions of channel combinations.', 'info');
 
     let payload = null;

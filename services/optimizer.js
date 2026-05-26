@@ -484,7 +484,7 @@ function assignmentToResult(assignment, radios, channelSummary, aps, allAPs, pro
     plan[key] = {
       suggestedChannel: assignedCh,
       changeNeeded: true,
-      impact: Math.round(evaluation.metrics.avgCu24 + evaluation.metrics.avgCu5 / 2) || 1,
+      impact: Math.round((evaluation.metrics.avgCu24 + evaluation.metrics.avgCu5) / 2) || 1,
     };
 
     if (!changedAPs.find(c => c.mac === r.apMac)) {
@@ -822,12 +822,15 @@ function runConstrainedOptimizerSingle(radios, channelSummary, aps, options = {}
 async function runGeneticOptimizer(radios, channelSummary, aps, options = {}, onProgress) {
   const maxChanges = options.maxChanges ?? DEFAULT_MAX_CHANGES;
   const timeBudgetMs = clampInt(Number(options.timeBudgetMs), 1000, 28800000, 150000);
+  const generationLimit = clampInt(Number(options.generationLimit), 100, 500000, 100000);
   const populationSize = clampInt(Number(options.populationSize), 10, 200, GA_POPULATION_SIZE);
   const mutationRate = Number(options.mutationRate) || GA_MUTATION_RATE;
   const eliteCount = Math.min(clampInt(Number(options.eliteCount), 1, 50, GA_ELITE_COUNT), Math.floor(populationSize / 4));
   const stagnationLimit = clampInt(Number(options.stagnationLimit), 10, 5000, GA_STAGNATION_LIMIT);
   const convergenceWindow = clampInt(Number(options.convergenceWindow), 20, 2000, 300);
   const convergenceThreshold = Number(options.convergenceThreshold) || 0.5;
+  const minImprovementThreshold = clampInt(Number(options.minImprovementThreshold), 0, 100, MIN_IMPROVEMENT_THRESHOLD);
+  const enforceMinImprovement = options.enforceMinImprovement === true;
   const searchMode = String(options.searchMode || 'ga').toLowerCase();
 
   const allAPs = Array.isArray(aps) ? aps : [];
@@ -947,7 +950,7 @@ async function runGeneticOptimizer(radios, channelSummary, aps, options = {}, on
   let reportCounter = 0;
   const REPORT_INTERVAL = Math.max(1, Math.round(populationSize * 0.4));
 
-  while ((Date.now() - started) < timeBudgetMs) {
+  while ((Date.now() - started) < timeBudgetMs && generations < generationLimit) {
     generations++;
     const elapsedFrac = Math.min(1, (Date.now() - started) / timeBudgetMs);
     const coolingFactor = 1 - elapsedFrac; // 1 → 0 over the run
@@ -1080,21 +1083,35 @@ async function runGeneticOptimizer(radios, channelSummary, aps, options = {}, on
   // ── Build final result ──
   const result = assignmentToResult(bestAssignment, radios, channelSummary, aps, allAPs, proximityGraph, maxChanges, bestEval);
 
+  const stopReason = convergedEarly
+    ? 'converged_early'
+    : (generations >= generationLimit ? 'generation_limit' : 'time_budget');
+
   result.searchMeta = {
     mode: 'ga',
     searchMode: searchMode,
     populationSize,
     timeBudgetMs,
+    generationLimit,
     generationsTried: generations,
     bestGeneration,
     durationMs: Date.now() - started,
     stagnationResets: stagnationCounter,
     convergedEarly,
+    stopReason,
     refinementApplied: refinementAccepted,
     refinementPasses: refinementPasses,
     objectiveScore: Math.round(bestEval.pain * 100) / 100,
     bestImprovementPct: bestEval.improvementPct,
   };
+
+  if (enforceMinImprovement === true && result.improvementReport.estimatedImprovementPct < minImprovementThreshold) {
+    result.plan = {};
+    result.changedAPs = [];
+    result.batchSummary.changesSuggested = 0;
+    result.batchSummary.recommendation = `No beneficial changes found above ${minImprovementThreshold}% predicted improvement.`;
+    result.searchMeta.minImprovementThreshold = minImprovementThreshold;
+  }
 
   return result;
 }
@@ -1122,6 +1139,7 @@ module.exports = {
   runConstrainedOptimizer,
   runGeneticOptimizer,
   evaluateAssignment,
+  buildProximityGraph,
   CHANNELS_24,
   CHANNELS_5,
 };

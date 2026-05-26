@@ -88,13 +88,13 @@ async function main() {
 
   if (completeData) {
     const changed = (completeData.changedAPs || []).length;
-    const meta = completeData.search_meta || {};
+    const meta = completeData.searchMeta || completeData.search_meta || {};
     console.log('\n--- RESULT ---');
     console.log('Changed APs:', changed);
-    console.log('Generations:', meta.generations_tried);
-    console.log('Duration:', meta.duration_ms, 'ms');
-    console.log('Best score:', meta.objective_score);
-    console.log('Improvement:', meta.best_improvement_pct, '%');
+    console.log('Generations:', meta.generationsTried ?? meta.generations_tried);
+    console.log('Duration:', meta.durationMs ?? meta.duration_ms, 'ms');
+    console.log('Best score:', meta.objectiveScore ?? meta.objective_score);
+    console.log('Improvement:', meta.bestImprovementPct ?? meta.best_improvement_pct, '%');
     completeData.changedAPs && completeData.changedAPs.slice(0, 5).forEach(ap => {
       console.log('  ', ap.mac, ap.name, '→', ap.changes);
     });
