@@ -14,7 +14,7 @@
  */
 
 const ExcelJS = require('exceljs');
-const { runConstrainedOptimizer } = require('./optimizer');
+const { runConstrainedOptimizer, CHANNELS_24, CHANNELS_5 } = require('./optimizer');
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 const S = {
@@ -370,6 +370,14 @@ function buildClientSheet(wb, clients) {
 
 function buildSummarySheet(wb, channelSummary, clientSummary, batchSummary, improvementReport, channelPolicy) {
   const ws = wb.addWorksheet('Summary');
+  const policyChannels24 = channelPolicy && channelPolicy.channels24;
+  const policyChannels5 = channelPolicy && channelPolicy.channels5;
+  const resolvedPolicy = {
+    ipadSafeOnly5GHz: !!(channelPolicy && channelPolicy.ipadSafeOnly5GHz),
+    onlyObservedChannels: !!(channelPolicy && channelPolicy.onlyObservedChannels),
+    channels24: Array.isArray(policyChannels24) ? policyChannels24 : CHANNELS_24,
+    channels5: Array.isArray(policyChannels5) ? policyChannels5 : CHANNELS_5,
+  };
 
   ws.mergeCells('A1:B1');
   const t = ws.getCell('A1');
@@ -407,10 +415,10 @@ function buildSummarySheet(wb, channelSummary, clientSummary, batchSummary, impr
     ['Health Index',    `${clientSummary.healthIndex}%`],
     [null, null],
     ['── Optimizer Channel Policy ──', ''],
-    ['5GHz mode', channelPolicy && channelPolicy.ipadSafeOnly5GHz ? 'iPad-safe non-DFS only' : 'default'],
-    ['Observed-only channels', channelPolicy && channelPolicy.onlyObservedChannels ? 'Yes' : 'No'],
-    ['2.4GHz Candidate Pool', channelPolicy && Array.isArray(channelPolicy.channels24) ? channelPolicy.channels24.join(', ') : '1, 6, 11'],
-    ['5GHz Candidate Pool', channelPolicy && Array.isArray(channelPolicy.channels5) ? channelPolicy.channels5.join(', ') : '36, 40, 44, 48, 149, 153, 157, 161, 165'],
+    ['5GHz mode', resolvedPolicy.ipadSafeOnly5GHz ? 'iPad-safe non-DFS only' : 'default'],
+    ['Observed-only channels', resolvedPolicy.onlyObservedChannels ? 'Yes' : 'No'],
+    ['2.4GHz Candidate Pool', resolvedPolicy.channels24.join(', ')],
+    ['5GHz Candidate Pool', resolvedPolicy.channels5.join(', ')],
     [null, null],
     ['2.4GHz Channel Distribution', ''],
     ['  CH-1',  ch24['1'] || 0],

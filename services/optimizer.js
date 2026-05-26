@@ -87,38 +87,38 @@ function inferFloor(name = '', index = 0) {
     if (num === 1) return '1OG';
     if (num === 2) return '2OG';
   }
-
-  function collectObservedChannels(radios, channelCounts, is24Band) {
-    const observed = new Set();
-
-    (Array.isArray(radios) ? radios : []).forEach((r) => {
-      const is24 = r.band === '2.4GHz' || r.radio === 'ng';
-      if (is24 !== is24Band) return;
-      const ch = Number(r.channel);
-      if (Number.isFinite(ch)) observed.add(ch);
-    });
-
-    Object.keys(channelCounts || {}).forEach((ch) => {
-      const n = Number(ch);
-      if (Number.isFinite(n)) observed.add(n);
-    });
-
-    return observed;
-  }
-
-  function resolveChannelPools(radios, channelSummary) {
-    const observed24 = collectObservedChannels(radios, channelSummary && channelSummary.channelCounts24, true);
-    const observed5 = collectObservedChannels(radios, channelSummary && channelSummary.channelCounts5, false);
-
-    const channels24 = CHANNELS_24.filter((ch) => observed24.has(ch));
-    const channels5 = CHANNELS_5.filter((ch) => observed5.has(ch));
-
-    return {
-      channels24: channels24.length > 0 ? channels24 : [...CHANNELS_24],
-      channels5: channels5.length > 0 ? channels5 : [...CHANNELS_5],
-    };
-  }
   return ['EG', '1OG', '2OG'][index % 3];
+}
+
+function collectObservedChannels(radios, channelCounts, is24Band) {
+  const observed = new Set();
+
+  (Array.isArray(radios) ? radios : []).forEach((r) => {
+    const is24 = r.band === '2.4GHz' || r.radio === 'ng';
+    if (is24 !== is24Band) return;
+    const ch = Number(r.channel);
+    if (Number.isFinite(ch)) observed.add(ch);
+  });
+
+  Object.keys(channelCounts || {}).forEach((ch) => {
+    const n = Number(ch);
+    if (Number.isFinite(n)) observed.add(n);
+  });
+
+  return observed;
+}
+
+function resolveChannelPools(radios, channelSummary) {
+  const observed24 = collectObservedChannels(radios, channelSummary && channelSummary.channelCounts24, true);
+  const observed5 = collectObservedChannels(radios, channelSummary && channelSummary.channelCounts5, false);
+
+  const channels24 = CHANNELS_24.filter((ch) => observed24.has(ch));
+  const channels5 = CHANNELS_5.filter((ch) => observed5.has(ch));
+
+  return {
+    channels24: channels24.length > 0 ? channels24 : [...CHANNELS_24],
+    channels5: channels5.length > 0 ? channels5 : [...CHANNELS_5],
+  };
 }
 
 // ── Proximity graph builder (server-side replica of frontend) ─────────────────
