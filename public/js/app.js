@@ -1764,8 +1764,9 @@ async function runBatchOptimizer(forceRefresh = true) {
     if (!payload.success) throw new Error(payload.error || 'Optimization failed');
 
     const planSignature = buildOptimizerPlanSignature(payload.changedAPs);
-    const history = Array.isArray(optimizerHistory) ? optimizerHistory : [];
-    if (!Array.isArray(optimizerHistory)) {
+    const hasValidHistory = Array.isArray(optimizerHistory);
+    const history = hasValidHistory ? optimizerHistory : [];
+    if (!hasValidHistory) {
       console.warn('[Optimizer] History state invalid; duplicate-check fallback using empty history.');
     }
     const lastRound = history[history.length - 1];
