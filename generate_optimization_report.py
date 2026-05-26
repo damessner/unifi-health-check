@@ -33,7 +33,8 @@ clients  = data.get("clients", {}).get("clients", [])
 # ── Impact scoring ───────────────────────────────────────────────────────────
 # Score = cu_total * (1 + tx_retries_pct/100) * cci_weight
 # cci_weight: more co-channel interferers → higher impact of fixing this AP
-CCI_WEIGHT = {"ng": {6: 13, 11: 9, 1: 11}, "na": {44: 17, 40: 9, 36: 1, 108: 3, 60: 3}}
+# 5GHz weights reflect non-DFS channels only (36-48 UNII-1, 149-165 UNII-3)
+CCI_WEIGHT = {"ng": {6: 13, 11: 9, 1: 11}, "na": {44: 17, 40: 9, 36: 1, 48: 3, 149: 3, 153: 3, 157: 3, 161: 3, 165: 3}}
 
 def impact_score(r):
     cu   = r.get("cu_total", 0)
@@ -52,9 +53,10 @@ radios_sorted = sorted([r for r in radios if r.get("channel")],
                        key=lambda x: x["_impact"], reverse=True)
 
 # ── Channel recommendation logic ─────────────────────────────────────────────
+# Non-DFS channels only — DFS channels (52–144) are excluded because
+# iPads and many client devices cannot associate on DFS channels.
 CHAN_24 = [1, 6, 11]
-CHAN_5  = [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120,
-           124, 128, 132, 136, 140]
+CHAN_5  = [36, 40, 44, 48, 149, 153, 157, 161, 165]
 
 ch_usage_24 = summary["channelCounts24"]
 ch_usage_5  = summary["channelCounts5"]

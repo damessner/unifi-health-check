@@ -33,6 +33,6 @@ module.exports = {
     stackMode: process.env.MOCK_STACK_MODE === 'true'
   },
   opt: {
-    maxChanges: parseInt(process.env.OPT_MAX_CHANGES, 10) || 8
+    maxChanges: parseInt(process.env.OPT_MAX_CHANGES, 10) || 10
   }
 };
