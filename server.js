@@ -227,6 +227,19 @@ async function getFreshData(bypassCache = false) {
 }
 
 /**
+ * API: Get tunable constants (thresholds, channel lists) for the frontend.
+ * Allows the frontend to stay in sync without hardcoded values.
+ */
+app.get('/api/constants', (req, res) => {
+  res.json({
+    success: true,
+    healthThresholds: analyzer.HEALTH_THRESHOLDS || null,
+    channels24: optimizer.CHANNELS_24 || null,
+    channels5: optimizer.CHANNELS_5 || null
+  });
+});
+
+/**
  * API: Get historical metric snapshots for trend analysis
  */
 app.get('/api/history', (req, res) => {

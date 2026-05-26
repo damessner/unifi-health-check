@@ -57,25 +57,49 @@ const KBPS_PER_MBPS = 1000;
 /** DFS 5 GHz channel numbers (channels 52–136) */
 const DFS_CHANNELS_5GHZ = ['52','56','60','64','100','104','108','112','116','120','124','128','132','136'];
 
-/** RF health thresholds used for simulated radio severity calculation */
-const RADIO_CRITICAL_CU_THRESHOLD = 75;
-const RADIO_CRITICAL_CCI_THRESHOLD = 12;
-const RADIO_WARNING_CU_THRESHOLD = 50;
-const RADIO_WARNING_CCI_THRESHOLD = 4;
-const RADIO_WARNING_TX_RETRIES_THRESHOLD = 25;
-const CACHE_AGE_THRESHOLD_SECONDS = 2;
-const SANDBOX_OVERRIDE_NOTICE_DELAY_MS = 800;
-const MIN_BASELINE_RADIO_LOAD = 12;
-const NEIGHBOR_CONTENTION_PENALTY_PCT = 18;
-const CLIENT_SATISFACTION_CU_WEIGHT = 0.7;
-const CLIENT_SATISFACTION_RETRY_WEIGHT = 0.5;
-const MIN_CLIENT_SATISFACTION = 10;
-const CLIENT_SATISFACTION_CRITICAL_THRESHOLD = 70;
-const CLIENT_SATISFACTION_WARNING_THRESHOLD = 85;
+/** RF health thresholds — defaults used until /api/constants fetched */
+let RADIO_CRITICAL_CU_THRESHOLD = 75;
+let RADIO_CRITICAL_CCI_THRESHOLD = 12;
+let RADIO_WARNING_CU_THRESHOLD = 50;
+let RADIO_WARNING_CCI_THRESHOLD = 4;
+let RADIO_WARNING_TX_RETRIES_THRESHOLD = 25;
+let CACHE_AGE_THRESHOLD_SECONDS = 2;
+let SANDBOX_OVERRIDE_NOTICE_DELAY_MS = 800;
+let MIN_BASELINE_RADIO_LOAD = 12;
+let NEIGHBOR_CONTENTION_PENALTY_PCT = 18;
+let CLIENT_SATISFACTION_CU_WEIGHT = 0.7;
+let CLIENT_SATISFACTION_RETRY_WEIGHT = 0.5;
+let MIN_CLIENT_SATISFACTION = 10;
+let CLIENT_SATISFACTION_CRITICAL_THRESHOLD = 70;
+let CLIENT_SATISFACTION_WARNING_THRESHOLD = 85;
+let ch6ConcentrationThreshold = 0.4;
 const MAX_CASCADE_LOG_ENTRIES = 12;
 const MAX_CLIENT_CASCADE_LOG_ENTRIES = 8;
 const MAX_MODELED_ENDPOINTS = 60;
 
+/**
+ * Fetch tunable constants from the server (/api/constants) and override
+ * the local default values so the frontend stays in sync with the backend.
+ * Called once during initialisation; defaults are used until the fetch resolves.
+ */
+async function fetchConstants() {
+  try {
+    const res = await fetch('/api/constants');
+    const data = await res.json();
+    if (data.success && data.healthThresholds) {
+      const t = data.healthThresholds;
+      if (t.criticalCu != null) RADIO_CRITICAL_CU_THRESHOLD = t.criticalCu;
+      if (t.criticalCci != null) RADIO_CRITICAL_CCI_THRESHOLD = t.criticalCci;
+      if (t.warningCu != null) RADIO_WARNING_CU_THRESHOLD = t.warningCu;
+      if (t.warningCci != null) RADIO_WARNING_CCI_THRESHOLD = t.warningCci;
+      if (t.warningRetries != null) RADIO_WARNING_TX_RETRIES_THRESHOLD = t.warningRetries;
+      if (t.ch6ConcentrationWarning != null) ch6ConcentrationThreshold = t.ch6ConcentrationWarning;
+      console.log('[App] Constants updated from server', t);
+    }
+  } catch (e) {
+    console.warn('[App] Could not fetch constants, using defaults', e);
+  }
+}
 
 // DOMContentLoaded Initialization
 document.addEventListener('DOMContentLoaded', () => {
@@ -121,6 +145,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Check Admin session status
   checkAdminStatus();
+
+  // Fetch tunable constants from server (overrides default thresholds)
+  fetchConstants();
 
   // Load Initial Data
   fetchData();
@@ -684,7 +711,7 @@ function renderChannelsTab() {
   if (note24) {
     const ch6 = chSummary.channelCounts24['6'] || 0;
     const total = chSummary.totalRadios24 || 1;
-    if (ch6 / total > 0.4) {  // 0.4 — matches analyzer.js HEALTH_THRESHOLDS.ch6ConcentrationWarning
+    if (ch6 / total > ch6ConcentrationThreshold) {
       note24.style.display = 'block';
       note24.className = 'analysis-note alert-warning';
       note24.innerHTML = `<strong>Overcrowding Flag:</strong> ${ch6} out of ${total} 2.4GHz radios are running on channel 6. Highly elevated sideband interference is occurring. Spread APs onto channels 1 and 11.`;
