@@ -25,10 +25,12 @@
 
 // ── Valid channels ────────────────────────────────────────────────────────────
 const CHANNELS_24 = [1, 6, 11];
-const CHANNELS_5 = [
-  36, 40, 44, 48, 52, 56, 60, 64,
-  100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140
-];
+
+// Only non-DFS channels: UNII-1 (36-48) + UNII-3 (149-165).
+// DFS channels (52-144) are excluded because iPads and many other client
+// devices cannot connect to them, making any AP placed on a DFS channel
+// effectively invisible to a large portion of the network's clients.
+const CHANNELS_5 = [36, 40, 44, 48, 149, 153, 157, 161, 165];
 
 // ── Scoring weights ───────────────────────────────────────────────────────────
 const WEIGHTS = {
@@ -49,7 +51,7 @@ const COMBO_PENALTIES = {
 };
 
 // Default max APs to change per optimization run
-const DEFAULT_MAX_CHANGES = 8;
+const DEFAULT_MAX_CHANGES = 10;
 
 // Minimum estimated improvement (%) to suggest a change
 const MIN_IMPROVEMENT_THRESHOLD = 5;

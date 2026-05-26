@@ -133,19 +133,27 @@ class NetworkAnalyzer {
       });
     }
 
-    // Check 5GHz recommendations (This is the critical school catastrophe!)
+    // Check 5GHz recommendations
+    // Thresholds: alert when ≥80% of APs are on channels 40/44 AND
+    // fewer than 20% of APs are already using the UNII-3 non-DFS band.
+    const STACKING_THRESHOLD = 0.8;
+    const MIN_UNII3_UTILIZATION = 0.2;
     const ch40Count = bands['5GHz'].channels['40'] || 0;
     const ch44Count = bands['5GHz'].channels['44'] || 0;
     const total5Count = bands['5GHz'].total || 1;
     const stackedPercent = (ch40Count + ch44Count) / total5Count;
 
-    if (stackedPercent > 0.8) {
+    // Count how many APs are already on UNII-3 non-DFS channels (149-165)
+    const unii3Channels = ['149', '153', '157', '161', '165'];
+    const unii3Count = unii3Channels.reduce((sum, ch) => sum + (bands['5GHz'].channels[ch] || 0), 0);
+
+    if (stackedPercent > STACKING_THRESHOLD && unii3Count < total5Count * MIN_UNII3_UTILIZATION) {
       recommendations.push({
         band: '5GHz',
         severity: 'critical',
-        title: 'Severe 5GHz Channel Stacking & DFS Exclusion',
-        description: `An alarming ${Math.round(stackedPercent * 100)}% of your 5GHz access points (${ch40Count + ch44Count} out of ${total5Count}) are crammed onto just two frequencies (Channel 40 and 44) at 40 MHz width. Your UniFi Network 10.0.160 Channel Plan has excluded all DFS channels (52-144), leaving the entire school with only TWO non-overlapping 40MHz channels (36+40 and 44+48).`,
-        action: 'In UniFi Network 10.0.160, click the "Channel AI" tab (sine wave icon on left) and enable the excluded DFS channels (52 to 144) under the 5 GHz Channel Plan. This will expand your available spectrum from 2 to 10 non-overlapping channels! Then, click the "Optimize" button to trigger the UniFi AI Optimization.'
+        title: 'Severe 5GHz Channel Stacking — Expand to UNII-3 Channels',
+        description: `An alarming ${Math.round(stackedPercent * 100)}% of your 5GHz access points (${ch40Count + ch44Count} out of ${total5Count}) are crammed onto just two frequencies (Channel 40 and 44), causing extreme co-channel interference. Only ${unii3Count} AP(s) use the UNII-3 non-DFS channels (149–165), leaving most of the available spectrum idle.`,
+        action: 'Redistribute APs across the non-DFS UNII-3 channels (149, 153, 157, 161, 165). These channels are fully compatible with iPads and all client devices, and provide up to 5 additional non-overlapping 20/40 MHz channels. Avoid DFS channels (52–144) — they require radar-avoidance delays and are not supported by iPads and many other clients. Use the Channel Optimizer to automatically generate a channel plan using only non-DFS channels.'
       });
     }
 
