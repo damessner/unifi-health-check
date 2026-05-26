@@ -1598,6 +1598,14 @@ function renderOptimalGrid() {
         }
       }
 
+      // Check if this AP is in the current optimizer batch
+      let isInBatch = false;
+      let batchInfo = null;
+      if (optimizerData && Array.isArray(optimizerData.changedAPs)) {
+        batchInfo = optimizerData.changedAPs.find(c => c.mac === ap.mac);
+        isInBatch = !!batchInfo;
+      }
+
       if (isInBatch) {
         impactCell = `<span class="badge-batch-impact"><i data-lucide="target" style="width:12px;height:12px;display:inline-block;vertical-align:middle;margin-right:4px;"></i>🎯 Batch Target — Score: ${batchInfo.healthScore}</span>`;
       } else if (resolvedCount > 0) {
@@ -1616,14 +1624,6 @@ function renderOptimalGrid() {
         : `<span class="badge-ok"><i data-lucide="check" style="width:12px; height:12px; display:inline-block; vertical-align:middle; margin-right:4px;"></i>OPTIMAL</span>`);
 
     const isChecked = checkedMacs.includes(ap.mac);
-
-    // Check if this AP is in the current optimizer batch
-    let isInBatch = false;
-    let batchInfo = null;
-    if (optimizerData && Array.isArray(optimizerData.changedAPs)) {
-      batchInfo = optimizerData.changedAPs.find(c => c.mac === ap.mac);
-      isInBatch = !!batchInfo;
-    }
 
     const tr = document.createElement('tr');
     tr.setAttribute('data-ap-row-mac', ap.mac);
