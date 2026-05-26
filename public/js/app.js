@@ -54,8 +54,8 @@ const EVENTS_LOG_MAX = 200;
 /** kbps to Mbps conversion factor */
 const KBPS_PER_MBPS = 1000;
 
-/** DFS 5 GHz channel numbers (channels 52–144) */
-const DFS_CHANNELS_5GHZ = ['52','56','60','64','100','104','108','112','116','120','124','128','132','136','140','144'];
+/** DFS 5 GHz channel numbers (channels 52–136) */
+const DFS_CHANNELS_5GHZ = ['52','56','60','64','100','104','108','112','116','120','124','128','132','136'];
 
 /** RF health thresholds used for simulated radio severity calculation */
 const RADIO_CRITICAL_CU_THRESHOLD = 75;
@@ -97,6 +97,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const toggle = document.getElementById('sandbox-toggle');
   if (toggle) {
     toggle.checked = sandboxModeEnabled;
+    toggle.addEventListener('change', () => toggleSandboxMode(toggle.checked));
   }
   const toggleWrap = document.querySelector('.sandbox-toggle-wrap');
   if (toggleWrap && sandboxModeEnabled) {
@@ -123,7 +124,112 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Load Initial Data
   fetchData();
-  
+
+  // ── Event listeners (replaces all inline onclick/onchange/oninput/onsubmit) ──
+
+  // Navigation tabs — delegate via data-tab attribute
+  document.querySelectorAll('.nav-btn[data-tab]').forEach(btn => {
+    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+  });
+
+  // Header toolbar
+  const elRefresh = document.getElementById('refresh-button');
+  if (elRefresh) elRefresh.addEventListener('click', () => fetchData(false, true));
+
+  const elExportXlsx = document.getElementById('export-xlsx-button');
+  if (elExportXlsx) elExportXlsx.addEventListener('click', exportXlsx);
+
+  const elAdminAuth = document.getElementById('admin-auth-button');
+  if (elAdminAuth) elAdminAuth.addEventListener('click', toggleAdminAuth);
+
+  // Overview tab
+  const elExportCsv = document.getElementById('btn-export-csv');
+  if (elExportCsv) elExportCsv.addEventListener('click', exportClientsCSV);
+
+  const elClearEvents = document.getElementById('btn-clear-events-log');
+  if (elClearEvents) elClearEvents.addEventListener('click', clearEventsLog);
+
+  // History tab
+  const elAutoRefresh = document.getElementById('auto-refresh-interval');
+  if (elAutoRefresh) elAutoRefresh.addEventListener('change', () => setAutoRefresh(elAutoRefresh.value));
+
+  const elClearHistory = document.getElementById('btn-clear-history');
+  if (elClearHistory) elClearHistory.addEventListener('click', clearHistory);
+
+  // Channel Analyzer — sort headers via event delegation on the thead
+  const elChannelsThead = document.getElementById('channels-table-thead');
+  if (elChannelsThead) {
+    elChannelsThead.addEventListener('click', e => {
+      const th = e.target.closest('th[data-sort-key]');
+      if (th) sortCloggedRadios(th.dataset.sortKey);
+    });
+  }
+
+  // Access Points tab filters
+  const elApSearch = document.getElementById('ap-search');
+  if (elApSearch) elApSearch.addEventListener('input', filterAPs);
+
+  const elApBand = document.getElementById('ap-filter-band');
+  if (elApBand) elApBand.addEventListener('change', filterAPs);
+
+  const elApFloor = document.getElementById('ap-filter-floor');
+  if (elApFloor) elApFloor.addEventListener('change', filterAPs);
+
+  // iPad Diagnostics tab filters
+  const elIpadSearch = document.getElementById('ipad-search');
+  if (elIpadSearch) elIpadSearch.addEventListener('input', filterIpads);
+
+  const elIpadStatus = document.getElementById('ipad-filter-status');
+  if (elIpadStatus) elIpadStatus.addEventListener('change', filterIpads);
+
+  const elIpadType = document.getElementById('ipad-filter-type');
+  if (elIpadType) elIpadType.addEventListener('change', filterIpads);
+
+  // Sandbox — Reset Tuning button
+  const elResetSandbox = document.getElementById('btn-reset-sandbox-overrides');
+  if (elResetSandbox) elResetSandbox.addEventListener('click', resetSandboxOverrides);
+
+  // Optimizer tab buttons
+  const elRunOpt = document.getElementById('btn-run-optimizer');
+  if (elRunOpt) elRunOpt.addEventListener('click', runBatchOptimizer);
+
+  const elRescanOpt = document.getElementById('btn-rescan-reopt');
+  if (elRescanOpt) elRescanOpt.addEventListener('click', rescanAndReoptimize);
+
+  const elResetOpt = document.getElementById('btn-reset-opt');
+  if (elResetOpt) elResetOpt.addEventListener('click', resetOptimizerState);
+
+  // Batch history toggle header
+  const elHistoryHeader = document.getElementById('opt-history-header');
+  if (elHistoryHeader) elHistoryHeader.addEventListener('click', toggleBatchHistory);
+
+  // Blueprint action buttons
+  const elSelectBatch = document.getElementById('btn-select-batch');
+  if (elSelectBatch) elSelectBatch.addEventListener('click', selectAllBatchAPs);
+
+  const elPrint = document.getElementById('btn-print');
+  if (elPrint) elPrint.addEventListener('click', () => window.print());
+
+  const elResetChecks = document.getElementById('btn-reset-checks');
+  if (elResetChecks) elResetChecks.addEventListener('click', resetCheckedAPs);
+
+  // Login modal
+  const elCloseLogin = document.getElementById('btn-close-login-modal');
+  if (elCloseLogin) elCloseLogin.addEventListener('click', closeLoginModal);
+
+  const elCancelLogin = document.getElementById('btn-cancel-login');
+  if (elCancelLogin) elCancelLogin.addEventListener('click', closeLoginModal);
+
+  const elLoginForm = document.getElementById('login-form');
+  if (elLoginForm) elLoginForm.addEventListener('submit', handleLoginSubmit);
+
+  // Confirm modal
+  const elCloseConfirm = document.getElementById('btn-close-confirm-modal');
+  if (elCloseConfirm) elCloseConfirm.addEventListener('click', closeConfirmModal);
+
+  const elCancelConfirm = document.getElementById('btn-cancel-confirm');
+  if (elCancelConfirm) elCancelConfirm.addEventListener('click', closeConfirmModal);
+
   // Note: Auto-sync / polling is disabled to prevent overloading the UniFi Hardware controller.
   // Refresh manually using the prominent 'Get Live Data' action button.
 });
@@ -188,7 +294,7 @@ function toggleAPChecked(mac, isChecked) {
  * Reset all checked states in the blueprint list
  */
 function resetCheckedAPs() {
-  if (confirm('Are you sure you want to reset all checked off items in your optimization checklist?')) {
+  showConfirmModal('Reset all checked off items in your optimization checklist?', () => {
     localStorage.removeItem('unifi_opt_checked_macs');
     
     // Uncheck all checkboxes in the DOM
@@ -203,7 +309,7 @@ function resetCheckedAPs() {
 
     // Update print metrics
     updatePrintProgress();
-  }
+  });
 }
 
 /**
@@ -498,9 +604,9 @@ function renderOverview() {
       card.innerHTML = `
         <div class="alert-icon ${iconColor}"><i data-lucide="${icon}"></i></div>
         <div class="alert-text ${rec.severity}">
-          <h4>${rec.title} (${rec.band})</h4>
-          <p>${rec.description}</p>
-          <p style="margin-top: 6px;"><strong>Root Cause Fix:</strong> ${rec.action}</p>
+          <h4>${escapeHtml(rec.title)} (${escapeHtml(rec.band)})</h4>
+          <p>${escapeHtml(rec.description)}</p>
+          <p style="margin-top: 6px;"><strong>Root Cause Fix:</strong> ${escapeHtml(rec.action)}</p>
           <span class="alert-action-suggest ${rec.severity}" onclick="switchTab('optimizer')">View optimization steps →</span>
         </div>
       `;
@@ -524,7 +630,7 @@ function renderOverview() {
         <div class="alert-text ${ipad.severity}">
           <h4>Client degraded: ${escapeHtml(ipad.hostname)} (${ipad.isIpad ? 'iPad' : 'Apple Device'})</h4>
           <p>Connected to <strong>${escapeHtml(ipad.apName)}</strong>. Symptoms: <strong>${symptoms}</strong>. Signal is ${ipad.signal} dBm, TX retries at ${ipad.txRetriesPct}%.</p>
-          <p style="margin-top: 6px;"><strong>Resolution:</strong> ${ipad.recommendation}</p>
+          <p style="margin-top: 6px;"><strong>Resolution:</strong> ${escapeHtml(ipad.recommendation)}</p>
           <span class="alert-action-suggest ${ipad.severity}" onclick="switchTab('ipads')">Analyze this iPad in roster →</span>
         </div>
       `;
@@ -578,7 +684,7 @@ function renderChannelsTab() {
   if (note24) {
     const ch6 = chSummary.channelCounts24['6'] || 0;
     const total = chSummary.totalRadios24 || 1;
-    if (ch6 / total > 0.3) {
+    if (ch6 / total > 0.4) {  // 0.4 — matches analyzer.js HEALTH_THRESHOLDS.ch6ConcentrationWarning
       note24.style.display = 'block';
       note24.className = 'analysis-note alert-warning';
       note24.innerHTML = `<strong>Overcrowding Flag:</strong> ${ch6} out of ${total} 2.4GHz radios are running on channel 6. Highly elevated sideband interference is occurring. Spread APs onto channels 1 and 11.`;
@@ -638,7 +744,8 @@ function renderChannelsTab() {
   const countLabel = document.getElementById('congested-radios-count');
   
   if (tableBody) {
-    tableBody.innerHTML = '';
+    // Build rows off-DOM in a DocumentFragment to avoid layout thrash on reflow
+    const fragment = document.createDocumentFragment();
     
     // Sort cloned AP radios according to user preferences
     const items = [...apiData.channels.radios];
@@ -699,8 +806,12 @@ function renderChannelsTab() {
         <td>${cciDisplay}</td>
         <td>${healthBadge}</td>
       `;
-      tableBody.appendChild(tr);
+      fragment.appendChild(tr);
     });
+
+    // Single DOM write — clears existing rows and inserts all new rows in one reflow
+    tableBody.innerHTML = '';
+    tableBody.appendChild(fragment);
   }
 }
 
@@ -888,18 +999,22 @@ function renderIpadsTab() {
 }
 
 /**
+ * Format a byte count into a human-readable string (KB / MB / GB…).
+ * Module-scoped so it is not re-created on every filterIpads() call.
+ */
+function formatBytes(bytes, decimals = 2) {
+  if (!bytes || bytes === 0) return '0 B';
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
+
+/**
  * iPad Filter and Roster populating
  */
 function filterIpads() {
-  const formatBytes = (bytes, decimals = 2) => {
-    if (!bytes || bytes === 0) return '0 B';
-    const k = 1024;
-    const dm = decimals < 0 ? 0 : decimals;
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
-  };
-
   const query = document.getElementById('ipad-search').value.toLowerCase();
   const statusFilter = document.getElementById('ipad-filter-status').value;
   const typeFilter = document.getElementById('ipad-filter-type').value;
@@ -1017,7 +1132,7 @@ function filterIpads() {
       <td>
         <div class="symptom-tag-container">${symptomTags || '<span style="color:var(--color-success); font-size:0.78rem;">✔ No anomalies</span>'}</div>
       </td>
-      <td class="diag-action-text">${c.recommendation}</td>
+      <td class="diag-action-text">${escapeHtml(c.recommendation)}</td>
     `;
     tableBody.appendChild(tr);
   });
@@ -1370,7 +1485,7 @@ function renderOptimalGrid() {
   const proximityModel = getCachedProxGraph(apiData.aps || apArray);
 
   const ch24Options = [1, 6, 11];
-  const ch5Options = [36, 44, 52, 60, 100, 108, 116, 124, 132, 140];
+  const ch5Options = [36, 44, 52, 60, 100, 108, 116, 124, 132];
 
   let driftCount = 0;
   let totalAudits = 0;
@@ -1534,7 +1649,7 @@ function renderOptimalGrid() {
         `<option value="${ch}" ${curCh24 === ch ? 'selected' : ''}>Ch ${ch}</option>`
       ).join('');
       
-      const ch5SelectOptions = [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140].map(ch => 
+      const ch5SelectOptions = [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136].map(ch => 
         `<option value="${ch}" ${curCh5 === ch ? 'selected' : ''}>Ch ${ch}</option>`
       ).join('');
       
@@ -1558,12 +1673,12 @@ function renderOptimalGrid() {
     } else {
       cell24Ch = r24 
         ? `<span class="${isCh24Drift ? 'text-drift' : ''}">${curCh24} ➔ <strong>${optCh24}</strong></span>
-           ${(isAdmin && isCh24Drift) ? `<button class="btn-change-inline" onclick="applyApChannelChange(event, '${ap.mac}', 'ng', ${optCh24})"><i data-lucide="zap" style="width:10px;height:10px;"></i>Change</button>` : ''}`
+           ${(isAdmin && isCh24Drift) ? `<button class="btn-change-inline" data-mac="${escapeHtml(ap.mac)}" data-radio="ng" data-channel="${optCh24}" onclick="applyApChannelChange(event)"><i data-lucide="zap" style="width:10px;height:10px;"></i>Change</button>` : ''}`
         : '<span class="text-muted">Disabled</span>';
         
       cell5Ch = r5
         ? `<span class="${isCh5Drift ? 'text-drift' : ''}">${curCh5} ➔ <strong>${optCh5}</strong></span>
-           ${(isAdmin && isCh5Drift) ? `<button class="btn-change-inline" onclick="applyApChannelChange(event, '${ap.mac}', 'na', ${optCh5})"><i data-lucide="zap" style="width:10px;height:10px;"></i>Change</button>` : ''}`
+           ${(isAdmin && isCh5Drift) ? `<button class="btn-change-inline" data-mac="${escapeHtml(ap.mac)}" data-radio="na" data-channel="${optCh5}" onclick="applyApChannelChange(event)"><i data-lucide="zap" style="width:10px;height:10px;"></i>Change</button>` : ''}`
         : '<span class="text-muted">Disabled</span>';
     }
 
@@ -3730,47 +3845,83 @@ function updateAdminUI() {
 }
 
 /**
- * Apply AP channel change request
+ * Show a styled confirmation modal instead of the native confirm() dialog.
+ * @param {string} message - The message to display
+ * @param {Function} onConfirm - Callback invoked when the user clicks Confirm
  */
-async function applyApChannelChange(e, apMac, radio, channel) {
-  const btn = e.currentTarget;
-  if (!btn || btn.disabled) return;
-  
-  const bandName = radio === 'ng' ? '2.4 GHz' : '5 GHz';
-  const confirmMsg = `Are you sure you want to change AP (${apMac}) on the ${bandName} band to channel ${channel}?\n\n` +
-                     `Warning: This will cause the Access Point to provision and temporarily drop client connections.`;
-  if (!confirm(confirmMsg)) {
+function showConfirmModal(message, onConfirm) {
+  const modal = document.getElementById('confirm-modal');
+  const msgEl = document.getElementById('confirm-modal-message');
+  const okBtn = document.getElementById('confirm-modal-ok');
+  if (!modal || !msgEl || !okBtn) {
+    // Fallback to native if the modal element is somehow missing
+    if (confirm(message)) onConfirm();
     return;
   }
-  
-  btn.disabled = true;
-  btn.classList.add('loading');
-  
-  try {
-    const headers = {
-        'Content-Type': 'application/json'
-      };
-      if (csrfToken) {
-        headers['x-csrf-token'] = csrfToken;
-      }
+  msgEl.textContent = message;
+  modal.style.display = 'flex';
+  // Clone the button to remove any previously attached listener
+  const newOkBtn = okBtn.cloneNode(true);
+  okBtn.parentNode.replaceChild(newOkBtn, okBtn);
+  newOkBtn.addEventListener('click', () => {
+    modal.style.display = 'none';
+    onConfirm();
+  });
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function closeConfirmModal() {
+  const modal = document.getElementById('confirm-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+/**
+ * Apply AP channel change request.
+ * Button element carries the parameters as data-* attributes.
+ */
+async function applyApChannelChange(e) {
+  const btn = e.currentTarget;
+  if (!btn || btn.disabled) return;
+
+  const apMac = btn.dataset.mac;
+  const radio = btn.dataset.radio;
+  const channel = parseInt(btn.dataset.channel, 10);
+
+  if (!apMac || !radio || !Number.isFinite(channel)) {
+    showToast('Invalid channel-change parameters on button.', 'error');
+    return;
+  }
+
+  const bandName = radio === 'ng' ? '2.4 GHz' : '5 GHz';
+  const confirmMsg = `Change AP (${apMac}) on ${bandName} to channel ${channel}?\n` +
+                     `Warning: The AP will re-provision and temporarily drop client connections.`;
+
+  showConfirmModal(confirmMsg, async () => {
+    btn.disabled = true;
+    btn.classList.add('loading');
+
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (csrfToken) headers['x-csrf-token'] = csrfToken;
 
       const res = await fetch('/api/admin/change-channel', {
         method: 'POST',
         headers,
         body: JSON.stringify({ apMac, radio, channel })
       });
-    
-    const data = await res.json();
-    if (res.ok && data.success) {
-      showToast(`Channel change submitted successfully! The AP is provisioning to channel ${channel} (can take up to 60 seconds to reflect in telemetry).`, 'success');
-      // Trigger a force-refresh of the diagnostics data
-      await fetchData(true, true);
-    } else {
-      throw new Error(data.error || 'Server error');
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        showToast(`Channel change submitted successfully! The AP is provisioning to channel ${channel} (can take up to 60 seconds to reflect in telemetry).`, 'success');
+        // Trigger a force-refresh of the diagnostics data
+        await fetchData(true, true);
+      } else {
+        throw new Error(data.error || 'Server error');
+      }
+    } catch (err) {
+      showToast(`Failed to update channel: ${err.message}`, 'error');
+      btn.disabled = false;
+      btn.classList.remove('loading');
     }
-  } catch (err) {
-    showToast(`Failed to update channel: ${err.message}`, 'error');
-    btn.disabled = false;
-    btn.classList.remove('loading');
-  }
+  });
 }

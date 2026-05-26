@@ -23,7 +23,10 @@ const HEALTH_THRESHOLDS = {
   criticalCci: 12,
   warningCu: 50,
   warningCci: 4,
-  warningRetries: 25
+  warningRetries: 25,
+  // Concentration of 2.4 GHz APs on channel 6 that triggers a warning.
+  // Must match CH6_CONCENTRATION_THRESHOLD in app.js.
+  ch6ConcentrationWarning: 0.4
 };
 
 class NetworkAnalyzer {
@@ -123,7 +126,7 @@ class NetworkAnalyzer {
     // Check 2.4GHz recommendations
     const ch6Count = bands['2.4GHz'].channels['6'] || 0;
     const total24Count = bands['2.4GHz'].total || 1;
-    if (ch6Count / total24Count > 0.4) {
+    if (ch6Count / total24Count > HEALTH_THRESHOLDS.ch6ConcentrationWarning) {
       recommendations.push({
         band: '2.4GHz',
         severity: 'warning',
@@ -134,26 +137,19 @@ class NetworkAnalyzer {
     }
 
     // Check 5GHz recommendations
-    // Thresholds: alert when ≥80% of APs are on channels 40/44 AND
-    // fewer than 20% of APs are already using the UNII-3 non-DFS band.
-    const STACKING_THRESHOLD = 0.8;
-    const MIN_UNII3_UTILIZATION = 0.2;
+    // Alert when ≥80% of APs are on channels 40/44 (severe channel stacking).
     const ch40Count = bands['5GHz'].channels['40'] || 0;
     const ch44Count = bands['5GHz'].channels['44'] || 0;
     const total5Count = bands['5GHz'].total || 1;
     const stackedPercent = (ch40Count + ch44Count) / total5Count;
 
-    // Count how many APs are already on UNII-3 non-DFS channels (149-165)
-    const unii3Channels = ['149', '153', '157', '161', '165'];
-    const unii3Count = unii3Channels.reduce((sum, ch) => sum + (bands['5GHz'].channels[ch] || 0), 0);
-
-    if (stackedPercent > STACKING_THRESHOLD && unii3Count < total5Count * MIN_UNII3_UTILIZATION) {
+    if (stackedPercent > 0.8) {
       recommendations.push({
         band: '5GHz',
         severity: 'critical',
-        title: 'Severe 5GHz Channel Stacking — Expand to UNII-3 Channels',
-        description: `An alarming ${Math.round(stackedPercent * 100)}% of your 5GHz access points (${ch40Count + ch44Count} out of ${total5Count}) are crammed onto just two frequencies (Channel 40 and 44), causing extreme co-channel interference. Only ${unii3Count} AP(s) use the UNII-3 non-DFS channels (149–165), leaving most of the available spectrum idle.`,
-        action: 'Redistribute APs across the non-DFS UNII-3 channels (149, 153, 157, 161, 165). These channels are fully compatible with iPads and all client devices, and provide up to 5 additional non-overlapping 20/40 MHz channels. Avoid DFS channels (52–144) — they require radar-avoidance delays and are not supported by iPads and many other clients. Use the Channel Optimizer to automatically generate a channel plan using only non-DFS channels.'
+        title: 'Severe 5GHz Channel Stacking — Use Wider Spectrum (DFS)',
+        description: `An alarming ${Math.round(stackedPercent * 100)}% of your 5GHz access points (${ch40Count + ch44Count} out of ${total5Count}) are crammed onto just two frequencies (Channel 40 and 44), causing extreme co-channel interference.`,
+        action: 'Enable DFS channels (52–64, 100–140) in the UniFi controller\'s 5 GHz Channel Plan. This expands the available spectrum from 2 to 19 non-overlapping 20 MHz channels. Then use the Channel Optimizer to automatically redistribute APs across the full channel set. The optimizer currently limits changes to 8 APs per round — apply the first batch, re-scan, and repeat.'
       });
     }
 

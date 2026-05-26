@@ -26,11 +26,11 @@
 // ── Valid channels ────────────────────────────────────────────────────────────
 const CHANNELS_24 = [1, 6, 11];
 
-// Only non-DFS channels: UNII-1 (36-48) + UNII-3 (149-165).
-// DFS channels (52-144) are excluded because iPads and many other client
-// devices cannot connect to them, making any AP placed on a DFS channel
-// effectively invisible to a large portion of the network's clients.
-const CHANNELS_5 = [36, 40, 44, 48, 149, 153, 157, 161, 165];
+// Full EU 5 GHz channel set: UNII-1 non-DFS (36-48) + DFS channels (52-136).
+const CHANNELS_5 = [
+  36, 40, 44, 48, 52, 56, 60, 64,
+  100, 104, 108, 112, 116, 120, 124, 128, 132, 136
+];
 
 // ── Scoring weights ───────────────────────────────────────────────────────────
 const WEIGHTS = {
@@ -280,8 +280,8 @@ function scoreCombo(ap, ch24, ch5, vLoad24, vLoad5, proximityGraph, floorAssignm
  * @returns {Object} { plan, improvementReport, batchSummary }
  */
 function runConstrainedOptimizer(radios, channelSummary, aps, options = {}) {
-  const maxChanges = options.maxChanges || DEFAULT_MAX_CHANGES;
-  const minImprovementThreshold = options.minImprovementThreshold || MIN_IMPROVEMENT_THRESHOLD;
+  const maxChanges = options.maxChanges ?? DEFAULT_MAX_CHANGES;
+  const minImprovementThreshold = options.minImprovementThreshold ?? MIN_IMPROVEMENT_THRESHOLD;
 
   // FIX 5: No module-level global — allAPs passed explicitly through every function
   const allAPs = Array.isArray(aps) ? aps : [];

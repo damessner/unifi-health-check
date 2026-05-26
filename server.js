@@ -14,12 +14,31 @@ const PORT = config.server.port;
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json({ limit: '1mb' }));
 
-// CORS for external API access (e.g., Grafana embedding, custom scripts)
+// CORS for external API consumers (e.g. Grafana). Origin is configurable via
+// CORS_ORIGIN env var. Set to a specific origin to restrict; leave blank to
+// disable CORS entirely (same-origin only). Defaults to '*' if env var is set.
 app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-token, x-admin-token, x-csrf-token');
+  const origin = config.server.corsOrigin;
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-token, x-admin-token, x-csrf-token');
+  }
   if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
+// Content-Security-Policy: restrict script/style sources. All event handlers
+// use addEventListener so 'unsafe-inline' is no longer needed for scripts.
+app.use((req, res, next) => {
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    "script-src 'self' https://unpkg.com https://cdn.jsdelivr.net",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data:",
+    "connect-src 'self'"
+  ].join('; '));
   next();
 });
 
@@ -281,7 +300,10 @@ app.get('/api/diagnostics', async (req, res) => {
 app.get('/api/export/xlsx', async (req, res) => {
   try {
     const force = req.query.force === 'true';
-    const maxChanges = parseInt(req.query.maxChanges, 10) || config.opt.maxChanges;
+    const rawMax = parseInt(req.query.maxChanges, 10);
+    const maxChanges = (Number.isFinite(rawMax) && rawMax > 0 && rawMax <= 100)
+      ? rawMax
+      : config.opt.maxChanges;
 
     const { devices, clients } = await getFreshData(force);
     const channelAnalysis = analyzer.analyzeChannels(devices);
@@ -317,8 +339,14 @@ app.get('/api/export/xlsx', async (req, res) => {
 app.get('/api/optimize', async (req, res) => {
   try {
     const force = req.query.force === 'true';
-    const maxChanges = parseInt(req.query.maxChanges, 10) || config.opt.maxChanges;
-    const minImprovementThreshold = parseInt(req.query.minImprovement, 10) || 5;
+    const rawMax2 = parseInt(req.query.maxChanges, 10);
+    const maxChanges = (Number.isFinite(rawMax2) && rawMax2 > 0 && rawMax2 <= 100)
+      ? rawMax2
+      : config.opt.maxChanges;
+    const rawMin = parseInt(req.query.minImprovement, 10);
+    const minImprovementThreshold = (Number.isFinite(rawMin) && rawMin >= 0 && rawMin <= 100)
+      ? rawMin
+      : 5;
 
     const { devices, clients } = await getFreshData(force);
     const channelAnalysis = analyzer.analyzeChannels(devices);
@@ -357,7 +385,7 @@ app.post('/api/auth/login', (req, res) => {
   }
 
   // Rate limiting
-  const ip = req.ip || req.connection.remoteAddress || 'unknown';
+  const ip = req.ip || 'unknown';
   if (!checkRateLimit(ip)) {
     return res.status(429).json({ success: false, error: 'Too many login attempts. Try again later.' });
   }
@@ -371,7 +399,8 @@ app.post('/api/auth/login', (req, res) => {
     const cookieFlags = `admin_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=28800`;
     const secureFlag = process.env.NODE_ENV === 'production' ? '; Secure' : '';
     res.setHeader('Set-Cookie', cookieFlags + secureFlag);
-    return res.json({ success: true, token, csrfToken });
+    // Return only the CSRF token — the session token is stored in an HttpOnly cookie.
+    return res.json({ success: true, csrfToken });
   }
 
   return res.status(401).json({ success: false, error: 'Invalid credentials' });
@@ -431,6 +460,12 @@ app.post('/api/admin/change-channel', adminAuth, verifyCSRF, async (req, res) =>
   }
 });
 
+// Return 404 JSON for any /api/* route that was not matched above.
+// This prevents the catch-all below from returning an HTML page for typos like /api/diagnotics.
+app.all('/api/*', (req, res) => {
+  res.status(404).json({ success: false, error: `API route not found: ${req.method} ${req.path}` });
+});
+
 // Serve index.html for all other routes to support client-side SPA routing if needed
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
@@ -478,7 +513,7 @@ async function startServer() {
     setTimeout(() => {
       console.error('[Server] Forced exit after timeout.');
       process.exit(1);
-    }, 10000);
+    }, 10000).unref();
   }
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));

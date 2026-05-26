@@ -1971,8 +1971,8 @@ body {
   box-shadow: 0 0 8px rgba(99, 102, 241, 0.2);
 }
 .opt-done-checkbox:checked {
-  background-color: var(--primary-color);
-  border-color: var(--primary-color);
+  background-color: var(--primary);
+  border-color: var(--primary);
   box-shadow: 0 0 8px rgba(99, 102, 241, 0.4);
 }
 .opt-done-checkbox:checked::after {

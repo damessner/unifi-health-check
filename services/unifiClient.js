@@ -144,7 +144,7 @@ class UnifiClient {
   async getDevices() {
     if (config.mock.enabled) {
       console.log('[UniFi Mock] Serving simulated access point devices...');
-      return MOCK_DEVICES;
+      return getMockDevices();
     }
     return await this._getWithRetry(`/api/s/${this.site}/stat/device`);
   }
@@ -156,7 +156,7 @@ class UnifiClient {
   async getClients() {
     if (config.mock.enabled) {
       console.log('[UniFi Mock] Serving simulated wireless clients...');
-      return MOCK_CLIENTS;
+      return getMockClients();
     }
     return await this._getWithRetry(`/api/s/${this.site}/stat/sta`);
   }
@@ -238,8 +238,20 @@ class UnifiClient {
 }
 
 
-const MOCK_DEVICES = buildMockDevices(12);
-const MOCK_CLIENTS = buildMockClients(MOCK_DEVICES, 60);
+// Lazy-initialised mock data — only computed when mock mode is actually enabled,
+// so production starts bear no cost from building 12 APs + 60 clients.
+let _mockDevices = null;
+let _mockClients = null;
+
+function getMockDevices() {
+  if (!_mockDevices) _mockDevices = buildMockDevices(12);
+  return _mockDevices;
+}
+
+function getMockClients() {
+  if (!_mockClients) _mockClients = buildMockClients(getMockDevices(), 60);
+  return _mockClients;
+}
 
 // MOCK_STACK_MODE simulates a real school deployment where most APs
 // are stacked on 5 GHz channels 40/44 (DFS channels excluded by controller)
