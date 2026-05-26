@@ -591,7 +591,7 @@ function assignmentToResult(assignment, radios, channelSummary, aps, allAPs, pro
       changesSuggested: changedAPs.length,
       remainingWorstAPs: Math.max(0, Object.keys(apMap).length - changedAPs.length),
       recommendation: changedAPs.length > 0
-        ? `GA found ${changedAPs.length} changes to improve network. Apply, then re-scan and re-run.`
+        ? `GA found ${changedAPs.length} high-impact changes. Apply these on the controller, then re-scan for the next batch (3-5 rounds total).`
         : 'GA found no beneficial changes. Your network may be well-configured.',
     },
     improvementReport,
@@ -788,7 +788,7 @@ function runConstrainedOptimizerSingle(radios, channelSummary, aps, options = {}
       maxChanges, changesSuggested: changedAPs.length,
       remainingWorstAPs: Math.max(0, apList.length - changedAPs.length),
       recommendation: changedAPs.length > 0
-        ? `Apply these ${changedAPs.length} changes, then re-scan and run optimizer again.`
+        ? `Apply these ${changedAPs.length} changes on the controller, then re-scan and re-run. Repeat 3-5 rounds for full optimization.`
         : 'No beneficial changes found within the current budget.',
     },
     improvementReport, proximityGraph,

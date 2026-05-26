@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const express = require('express');
 const path = require('path');
+const { spawn } = require('child_process');
 const config = require('./config');
 const unifiClient = require('./services/unifiClient');
 const analyzer = require('./services/analyzer');
@@ -456,24 +457,123 @@ app.get('/api/optimize/progress', async (req, res) => {
       totalRadios: channelAnalysis.radios.length,
     });
 
-    // Run GA optimizer with progress callback
-    const result = await optimizer.runGeneticOptimizer(
-      channelAnalysis.radios,
-      channelAnalysis.summary,
-      apsModel,
-      { maxChanges, timeBudgetMs, populationSize, searchMode },
-      (progress) => {
-        // Stream progress to the frontend
-        sendEvent('progress', progress);
-      }
-    );
+    if (searchMode === 'rust') {
+      // ── Rust native optimizer ─────────────────────────────────────────────
+      const rustBin = path.join(__dirname, 'rust-optimizer', 'target', 'release', 'unifi-ga-optimizer.exe');
+      const input = {
+        radios: channelAnalysis.radios.map(r => ({
+          apMac: r.apMac, radio: r.radio, channel: r.channel,
+          cu_total: r.cu_total || 0, cci_count: r.cci_count || 0,
+          tx_retries_pct: r.tx_retries_pct || 0, num_sta: r.num_sta || 0,
+          bw: r.bw || null, cu_self_rx: r.cu_self_rx || 0, cu_self_tx: r.cu_self_tx || 0,
+          band: r.band || null, apName: r.apName || r.apMac,
+        })),
+        channel_summary: {
+          channelCounts24: channelAnalysis.summary.channelCounts24 || {},
+          channelCounts5: channelAnalysis.summary.channelCounts5 || {},
+        },
+        max_changes: maxChanges,
+        time_budget_ms: timeBudgetMs,
+        population_size: populationSize,
+        mutation_rate: 0.25,
+        elite_count: Math.max(2, Math.floor(populationSize / 10)),
+        stagnation_limit: 200,
+        convergence_window: 300,
+      };
 
-    // Send final complete event with full result
-    sendEvent('complete', {
-      success: true,
-      timestamp: Date.now(),
-      ...result,
-    });
+      const proc = spawn(rustBin, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+      let completeData = null;
+
+      proc.stdout.on('data', (chunk) => {
+        const lines = chunk.toString().split('\n').filter(Boolean);
+        for (const line of lines) {
+          try {
+            const msg = JSON.parse(line);
+            if (msg.type === 'progress') {
+              sendEvent('progress', {
+                phase: 'searching',
+                generation: msg.generation,
+                populationSize: populationSize,
+                elapsedMs: msg.elapsed_ms,
+                remainingMs: Math.max(0, timeBudgetMs - msg.elapsed_ms),
+                totalBudgetMs: timeBudgetMs,
+                bestPain: msg.best_pain,
+                bestImprovementPct: msg.best_improvement_pct,
+                bestChangesCount: msg.best_changes,
+                diversity: msg.diversity,
+                meanPain: msg.mean_pain,
+                medianPain: msg.median_pain,
+                worstPain: msg.worst_pain,
+                statusText: msg.status_text,
+              });
+            } else if (msg.type === 'complete') {
+              completeData = msg;
+            }
+          } catch (_) { /* skip parse errors */ }
+        }
+      });
+
+      proc.stderr.on('data', (chunk) => {
+        console.error('[Rust-Opt]', chunk.toString().trim());
+      });
+
+      await new Promise((resolve, reject) => {
+        proc.on('close', (code) => {
+          if (code !== 0 && !completeData) {
+            reject(new Error(`Rust optimizer exited with code ${code}`));
+          } else {
+            resolve();
+          }
+        });
+        proc.on('error', reject);
+        proc.stdin.write(JSON.stringify(input) + '\n');
+        proc.stdin.end();
+      });
+
+      if (!completeData) throw new Error('Rust optimizer produced no result');
+
+      // Transform Rust output to the format the frontend expects
+      const rustResult = {
+        plan: completeData.plan || {},
+        changedAPs: (completeData.changedAPs || []).map(ap => ({
+          mac: ap.mac, name: ap.name, floor: ap.floor || '—',
+          healthScore: ap.health_score || 0,
+          changes: ap.changes || '',
+          oldNgCh: ap.old_ng_ch, newNgCh: ap.new_ng_ch,
+          oldNaCh: ap.old_na_ch, newNaCh: ap.new_na_ch,
+          cu: ap.cu || 0, cci: ap.cci || 0,
+        })),
+        totalAPs: completeData.total_aps || channelAnalysis.radios.length,
+        candidatesConsidered: (completeData.changedAPs || []).length,
+        batchSummary: completeData.batch_summary || {
+          maxChanges, changesSuggested: (completeData.changedAPs || []).length,
+          remainingWorstAPs: Math.max(0, channelAnalysis.radios.length - (completeData.changedAPs || []).length),
+          recommendation: 'Rust optimizer completed.',
+        },
+        improvementReport: completeData.improvement_report || null,
+        proximityGraph: buildProximityGraph(apsModel),
+        searchMeta: completeData.search_meta || { mode: 'rust' },
+      };
+
+      sendEvent('complete', { success: true, timestamp: Date.now(), ...rustResult });
+    } else {
+      // ── JavaScript GA optimizer ─────────────────────────────────────────
+      const result = await optimizer.runGeneticOptimizer(
+        channelAnalysis.radios,
+        channelAnalysis.summary,
+        apsModel,
+        { maxChanges, timeBudgetMs, populationSize, searchMode },
+        (progress) => {
+          sendEvent('progress', progress);
+        }
+      );
+
+      sendEvent('complete', {
+        success: true,
+        timestamp: Date.now(),
+        ...result,
+      });
+    }
 
     res.end();
   } catch (err) {

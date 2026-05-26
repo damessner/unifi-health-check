@@ -679,6 +679,9 @@ fn main() {
         }
     }
 
+    let changes_count = changed_aps.len() as u32;
+    let changes_empty = changed_aps.is_empty();
+
     let complete = CompleteEvent {
         r#type: "complete".to_string(),
         success: true,
@@ -688,12 +691,12 @@ fn main() {
         improvement_report,
         batch_summary: BatchSummary {
             max_changes: input.max_changes,
-            changes_suggested: changed_aps.len() as u32,
-            remaining_worst_aps: total_aps.saturating_sub(changed_aps.len() as u32),
-            recommendation: if changed_aps.is_empty() {
+            changes_suggested: changes_count,
+            remaining_worst_aps: total_aps.saturating_sub(changes_count),
+            recommendation: if changes_empty {
                 "No beneficial changes found.".to_string()
             } else {
-                format!("Apply these {} changes, then re-scan and re-run.", changed_aps.len())
+                format!("Apply these {} changes, then re-scan and re-run.", changes_count)
             },
         },
         search_meta: SearchMeta {

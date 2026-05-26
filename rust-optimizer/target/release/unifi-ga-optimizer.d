@@ -1,0 +1,1 @@
+C:\Users\dames\OneDrive\ -\ Mittelschule\ Telfs\github\unifi-health-check\rust-optimizer\target\release\unifi-ga-optimizer.exe: C:\Users\dames\OneDrive\ -\ Mittelschule\ Telfs\github\unifi-health-check\rust-optimizer\src\main.rs
