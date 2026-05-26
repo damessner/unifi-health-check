@@ -307,17 +307,61 @@ function randomValidChannel(is24) {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
-function createRandomAssignment(radios) {
+/**
+ * Domain-aware channel selection: prefers less-crowded channels based on
+ * the current assignment's channel load distribution, and avoids same-floor
+ * channel reuse when proximity info is available.
+ */
+function smartChannel(is24, currentAssignment, radios, proximityGraph, apMac) {
+  const pool = is24 ? CHANNELS_24 : CHANNELS_5;
+  // Build channel load from current assignment
+  const load = {};
+  radios.forEach(r => {
+    const key = `${r.apMac}_${r.radio}`;
+    const ch = currentAssignment[key] || r.channel;
+    const rIs24 = r.band === '2.4GHz' || r.radio === 'ng';
+    if (rIs24 === is24) {
+      load[ch] = (load[ch] || 0) + 1;
+    }
+  });
+  // Get this AP's floor neighbors
+  const graphEntry = proximityGraph && proximityGraph[apMac];
+  const floorNeighborChs = new Set();
+  if (graphEntry) {
+    graphEntry.neighbors.forEach(nMac => {
+      radios.forEach(r => {
+        if (r.apMac === nMac) {
+          const key = `${r.apMac}_${r.radio}`;
+          const rIs24 = r.band === '2.4GHz' || r.radio === 'ng';
+          if (rIs24 === is24) {
+            floorNeighborChs.add(currentAssignment[key] || r.channel);
+          }
+        }
+      });
+    });
+  }
+  // Score each channel: lower load + no floor neighbor overlap = better
+  const scored = pool.map(ch => {
+    let penalty = (load[ch] || 0) * 10;
+    if (floorNeighborChs.has(ch)) penalty += 20;
+    return { ch, penalty };
+  });
+  scored.sort((a, b) => a.penalty - b.penalty);
+  // Weighted random pick among top candidates (80% pick from top 3, else fully random)
+  const top = scored.slice(0, Math.min(3, scored.length));
+  return Math.random() < 0.8
+    ? top[Math.floor(Math.random() * top.length)].ch
+    : pool[Math.floor(Math.random() * pool.length)];
+}
+
+function createRandomAssignment(radios, proximityGraph) {
   const assignment = {};
   radios.forEach(r => {
     const key = `${r.apMac}_${r.radio}`;
     const is24 = r.band === '2.4GHz' || r.radio === 'ng';
-    // 70% chance to change, 30% stay current (biases toward stability)
-    // Actually for the GA we want diversity — both changed and unchanged solutions
     if (Math.random() < 0.85) {
-      assignment[key] = randomValidChannel(is24);
+      assignment[key] = smartChannel(is24, assignment, radios, proximityGraph, r.apMac);
     }
-    // else leave undefined = keep current
   });
   return assignment;
 }
@@ -329,7 +373,6 @@ function crossoverAssignments(assignmentA, assignmentB) {
     const a = assignmentA[key];
     const b = assignmentB[key];
     if (a !== undefined && b !== undefined) {
-      // Uniform crossover — pick randomly from either parent
       child[key] = Math.random() < 0.5 ? a : b;
     } else if (a !== undefined) {
       child[key] = Math.random() < 0.9 ? a : undefined;
@@ -340,16 +383,56 @@ function crossoverAssignments(assignmentA, assignmentB) {
   return child;
 }
 
-function mutateAssignment(assignment, radios, mutationRate) {
+/**
+ * Domain-aware mutation with adaptive rate.
+ * mutationRate is the base rate; it is adjusted by the cooling factor (0..1)
+ * so that later generations have less disruptive mutations.
+ */
+function mutateAssignment(assignment, radios, mutationRate, coolingFactor, proximityGraph) {
   const result = { ...assignment };
+  const adjustedRate = mutationRate * (0.3 + 0.7 * coolingFactor);
   radios.forEach(r => {
     const key = `${r.apMac}_${r.radio}`;
-    if (Math.random() < mutationRate) {
+    if (Math.random() < adjustedRate) {
       const is24 = r.band === '2.4GHz' || r.radio === 'ng';
-      result[key] = randomValidChannel(is24);
+      result[key] = smartChannel(is24, result, radios, proximityGraph, r.apMac);
     }
   });
   return result;
+}
+
+/**
+ * Local search refinement: for each changed radio in the best assignment,
+ * try every valid channel and keep the best one. Repeat until no improvement.
+ */
+function refineAssignment(assignment, radios, channelSummary, maxChanges, proximityGraph) {
+  let best = { ...assignment };
+  const keys = Object.keys(best);
+  let improved = true;
+  let rounds = 0;
+  while (improved && rounds < 5) {
+    improved = false;
+    rounds++;
+    for (const key of keys) {
+      const r = radios.find(x => `${x.apMac}_${x.radio}` === key);
+      if (!r) continue;
+      const is24 = r.band === '2.4GHz' || r.radio === 'ng';
+      const pool = is24 ? CHANNELS_24 : CHANNELS_5;
+      const original = best[key];
+      const currentEval = evaluateAssignment(radios, best, channelSummary, maxChanges);
+      for (const ch of pool) {
+        if (ch === original) continue;
+        const trial = { ...best, [key]: ch };
+        const trialEval = evaluateAssignment(radios, trial, channelSummary, maxChanges);
+        if (trialEval.pain < currentEval.pain) {
+          best = trial;
+          improved = true;
+          break; // accept first improvement and move to next key
+        }
+      }
+    }
+  }
+  return best;
 }
 
 function tournamentSelect(population, fitnessScores, tournamentSize) {
@@ -722,64 +805,92 @@ async function runGeneticOptimizer(radios, channelSummary, aps, options = {}, on
   const mutationRate = Number(options.mutationRate) || GA_MUTATION_RATE;
   const eliteCount = Math.min(clampInt(Number(options.eliteCount), 1, 50, GA_ELITE_COUNT), Math.floor(populationSize / 4));
   const stagnationLimit = clampInt(Number(options.stagnationLimit), 10, 5000, GA_STAGNATION_LIMIT);
+  const convergenceWindow = clampInt(Number(options.convergenceWindow), 20, 2000, 300);
+  const convergenceThreshold = Number(options.convergenceThreshold) || 0.5;
 
   const allAPs = Array.isArray(aps) ? aps : [];
   const proximityGraph = buildProximityGraph(allAPs);
   const started = Date.now();
 
-  // Helper to yield to event loop so SSE can flush
   const yieldToLoop = () => new Promise(resolve => setImmediate(resolve));
 
-  // 1. Create initial population
+  // ── Initialise population ──
   let population = [];
   let fitnessScores = [];
 
-  // Baseline: the heuristic solution (generation 0 baseline)
-  const heuristicResult = runConstrainedOptimizerSingle(radios, channelSummary, aps, { ...options, comboJitter: 0 });
-  const heuristicAssignment = {};
-
-  // Encode heuristic result as assignment
-  radios.forEach(r => {
-    const key = `${r.apMac}_${r.radio}`;
-    const opt = heuristicResult.plan[key];
-    if (opt && opt.changeNeeded) {
-      heuristicAssignment[key] = opt.suggestedChannel;
+  // Seed with multiple heuristic variants (different jitter levels)
+  const heuristicJitterValues = [0, 2, 5, 10, 20];
+  for (const jitter of heuristicJitterValues) {
+    const hResult = runConstrainedOptimizerSingle(radios, channelSummary, aps, { ...options, comboJitter: jitter });
+    const hAssignment = {};
+    let hasChanges = false;
+    radios.forEach(r => {
+      const key = `${r.apMac}_${r.radio}`;
+      const opt = hResult.plan[key];
+      if (opt && opt.changeNeeded) {
+        hAssignment[key] = opt.suggestedChannel;
+        hasChanges = true;
+      } else {
+        // Keep current channel encoded as no-change (undefined)
+      }
+    });
+    // Only add if unique (no duplicates)
+    if (hasChanges || jitter === 0) {
+      const evalResult = evaluateAssignment(radios, hAssignment, channelSummary, maxChanges);
+      population.push(hAssignment);
+      fitnessScores.push(evalResult.pain);
     }
-  });
+  }
 
-  // Evaluate baseline
-  const heuristicEval = evaluateAssignment(radios, heuristicAssignment, channelSummary, maxChanges);
-
-  // Seed population with heuristic
-  population.push(heuristicAssignment);
-  fitnessScores.push(heuristicEval.pain);
-
-  // Fill rest with random individuals
-  for (let i = 1; i < populationSize; i++) {
-    const assignment = createRandomAssignment(radios);
+  // Fill rest with smart random individuals
+  while (population.length < populationSize) {
+    const assignment = createRandomAssignment(radios, proximityGraph);
     const evalResult = evaluateAssignment(radios, assignment, channelSummary, maxChanges);
     population.push(assignment);
     fitnessScores.push(evalResult.pain);
   }
 
-  let bestAssignment = heuristicAssignment;
-  let bestEval = heuristicEval;
+  // Track best
+  let bestAssignment = population[0];
+  let bestEval = { pain: fitnessScores[0] };
+  // Evaluate best properly
+  bestEval = evaluateAssignment(radios, bestAssignment, channelSummary, maxChanges);
+  for (let i = 0; i < population.length; i++) {
+    const ev = evaluateAssignment(radios, population[i], channelSummary, maxChanges);
+    if (ev.pain < bestEval.pain) {
+      bestEval = ev;
+      bestAssignment = population[i];
+    }
+  }
+
   let bestGeneration = 0;
 
   // Sort initial population
-  const sortedIndices = population.map((_, i) => i).sort((a, b) => fitnessScores[a] - fitnessScores[b]);
-  population = sortedIndices.map(i => population[i]);
-  fitnessScores = sortedIndices.map(i => fitnessScores[i]);
+  const sortPop = () => {
+    const si = population.map((_, i) => i).sort((a, b) => fitnessScores[a] - fitnessScores[b]);
+    population = si.map(i => population[i]);
+    fitnessScores = si.map(i => fitnessScores[i]);
+  };
+  sortPop();
 
   let generations = 0;
   let stagnationCounter = 0;
   let lastImprovementGen = 0;
+  let convergedEarly = false;
 
-  // Report initial progress
+  // Convergence tracking: sliding window of best scores
+  const bestHistory = [];
+
+  // Progress sender (enhanced)
   const sendProgress = async (phase) => {
     if (typeof onProgress !== 'function') return;
     const elapsed = Date.now() - started;
     const remaining = Math.max(0, timeBudgetMs - elapsed);
+    const meanFit = fitnessScores.reduce((a, b) => a + b, 0) / fitnessScores.length;
+    const sortedF = [...fitnessScores].sort((a, b) => a - b);
+    const diversity = sortedF[sortedF.length - 1] - sortedF[0];
+    const worstFit = sortedF[sortedF.length - 1];
+    const medianFit = sortedF[Math.floor(sortedF.length / 2)];
     onProgress({
       phase,
       generation: generations,
@@ -792,35 +903,45 @@ async function runGeneticOptimizer(radios, channelSummary, aps, options = {}, on
       bestChangesCount: bestEval.distinctAPsChanged,
       bestGeneration,
       stagnationCounter,
-      statusText: phase === 'searching'
-        ? `Exploring generation ${generations}... best pain ${Math.round(bestEval.pain * 100) / 100}`
-        : `${phase}`,
+      convergedEarly,
+      diversity: Math.round(diversity * 100) / 100,
+      meanPain: Math.round(meanFit * 100) / 100,
+      medianPain: Math.round(medianFit * 100) / 100,
+      worstPain: Math.round(worstFit * 100) / 100,
+      statusText: convergedEarly
+        ? `Converged at gen ${bestGeneration} (best ${Math.round(bestEval.pain * 100) / 100}). Refining...`
+        : (phase === 'refining'
+            ? `Refining best solution (gen ${generations})...`
+            : (phase === 'searching'
+                ? `Generation ${generations}: best ${Math.round(bestEval.pain * 100) / 100}, diversity ${Math.round(diversity)}`
+                : phase)),
     });
     await yieldToLoop();
   };
 
   await sendProgress('initializing');
 
-  // 2. Evolve
+  // ── Main evolution loop ──
   let reportCounter = 0;
-  const REPORT_INTERVAL = Math.max(1, Math.round(populationSize * 0.5));
+  const REPORT_INTERVAL = Math.max(1, Math.round(populationSize * 0.4));
 
   while ((Date.now() - started) < timeBudgetMs) {
     generations++;
+    const elapsedFrac = Math.min(1, (Date.now() - started) / timeBudgetMs);
+    const coolingFactor = 1 - elapsedFrac; // 1 → 0 over the run
 
     // Create next generation
     const nextPopulation = [];
     const nextFitnessScores = [];
 
-    // Elitism: keep the best individuals
+    // Elitism
     for (let i = 0; i < eliteCount && i < population.length; i++) {
       nextPopulation.push(population[i]);
       nextFitnessScores.push(fitnessScores[i]);
     }
 
-    // Fill rest via tournament selection + crossover + mutation
+    // Fill rest via tournament + crossover + adaptive mutation
     while (nextPopulation.length < populationSize) {
-      // Select parents
       const p1Idx = tournamentSelect(population, fitnessScores, GA_TOURNAMENT_SIZE);
       const p2Idx = tournamentSelect(population, fitnessScores, GA_TOURNAMENT_SIZE);
 
@@ -831,14 +952,12 @@ async function runGeneticOptimizer(radios, channelSummary, aps, options = {}, on
         child = { ...population[p1Idx] };
       }
 
-      // Mutation
-      child = mutateAssignment(child, radios, mutationRate);
+      child = mutateAssignment(child, radios, mutationRate, coolingFactor, proximityGraph);
 
       const evalResult = evaluateAssignment(radios, child, channelSummary, maxChanges);
       nextPopulation.push(child);
       nextFitnessScores.push(evalResult.pain);
 
-      // Track best
       if (evalResult.pain < bestEval.pain) {
         bestEval = evalResult;
         bestAssignment = child;
@@ -847,19 +966,18 @@ async function runGeneticOptimizer(radios, channelSummary, aps, options = {}, on
       }
     }
 
-    // Sort by fitness for next generation
+    // Sort
     const sorted = nextPopulation.map((_, i) => i).sort((a, b) => nextFitnessScores[a] - nextFitnessScores[b]);
     population = sorted.map(i => nextPopulation[i]);
     fitnessScores = sorted.map(i => nextFitnessScores[i]);
 
-    // Stagnation tracking
+    // Stagnation injection
     if (generations - lastImprovementGen > stagnationLimit) {
-      // Inject fresh random individuals to escape local minima
       const injectCount = Math.max(2, Math.floor(populationSize * 0.15));
       for (let i = 0; i < injectCount; i++) {
         const idx = population.length - 1 - i;
         if (idx < 0) break;
-        const fresh = createRandomAssignment(radios);
+        const fresh = createRandomAssignment(radios, proximityGraph);
         const freshEval = evaluateAssignment(radios, fresh, channelSummary, maxChanges);
         population[idx] = fresh;
         fitnessScores[idx] = freshEval.pain;
@@ -871,18 +989,50 @@ async function runGeneticOptimizer(radios, channelSummary, aps, options = {}, on
         }
       }
       stagnationCounter++;
+      // Re-sort after injection
+      sortPop();
     }
 
-    // Report progress periodically
+    // Convergence detection
+    bestHistory.push(bestEval.pain);
+    if (bestHistory.length > convergenceWindow) bestHistory.shift();
+    if (bestHistory.length >= convergenceWindow && generations >= 50) {
+      const oldest = bestHistory[0];
+      const newest = bestHistory[bestHistory.length - 1];
+      const improvement = Math.abs(oldest - newest);
+      const pctImprovement = oldest > 0 ? (improvement / oldest) * 100 : 0;
+      if (pctImprovement < convergenceThreshold && (Date.now() - started) > timeBudgetMs * 0.4) {
+        convergedEarly = true;
+        // Break out to move to refinement phase
+        break;
+      }
+    }
+
+    // Progress
     reportCounter++;
     if (reportCounter % REPORT_INTERVAL === 0 || generations === 1) {
       await sendProgress('searching');
     }
   }
 
-  // 3. Build final result from best assignment
+  // ── Refinement phase: local search on best assignment ──
+  if (!convergedEarly) {
+    // If we didn't converge early, still try refinement in remaining time
+    await sendProgress('refining');
+  }
+  const refined = refineAssignment(bestAssignment, radios, channelSummary, maxChanges, proximityGraph);
+  const refinedEval = evaluateAssignment(radios, refined, channelSummary, maxChanges);
+  let refinementAccepted = false;
+  if (refinedEval.pain < bestEval.pain) {
+    bestAssignment = refined;
+    bestEval = refinedEval;
+    bestGeneration = generations + 1; // refinement counts as an extra gen
+    refinementAccepted = true;
+  }
+
   await sendProgress('finalizing');
 
+  // ── Build final result ──
   const result = assignmentToResult(bestAssignment, radios, channelSummary, aps, allAPs, proximityGraph, maxChanges, bestEval);
 
   result.searchMeta = {
@@ -893,6 +1043,8 @@ async function runGeneticOptimizer(radios, channelSummary, aps, options = {}, on
     bestGeneration,
     durationMs: Date.now() - started,
     stagnationResets: stagnationCounter,
+    convergedEarly,
+    refinementApplied: refinementAccepted,
     objectiveScore: Math.round(bestEval.pain * 100) / 100,
     bestImprovementPct: bestEval.improvementPct,
   };
