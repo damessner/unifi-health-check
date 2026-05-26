@@ -134,6 +134,10 @@ class NetworkAnalyzer {
     }
 
     // Check 5GHz recommendations
+    // Thresholds: alert when ≥80% of APs are on channels 40/44 AND
+    // fewer than 20% of APs are already using the UNII-3 non-DFS band.
+    const STACKING_THRESHOLD = 0.8;
+    const MIN_UNII3_UTILIZATION = 0.2;
     const ch40Count = bands['5GHz'].channels['40'] || 0;
     const ch44Count = bands['5GHz'].channels['44'] || 0;
     const total5Count = bands['5GHz'].total || 1;
@@ -143,7 +147,7 @@ class NetworkAnalyzer {
     const unii3Channels = ['149', '153', '157', '161', '165'];
     const unii3Count = unii3Channels.reduce((sum, ch) => sum + (bands['5GHz'].channels[ch] || 0), 0);
 
-    if (stackedPercent > 0.8 && unii3Count < total5Count * 0.2) {
+    if (stackedPercent > STACKING_THRESHOLD && unii3Count < total5Count * MIN_UNII3_UTILIZATION) {
       recommendations.push({
         band: '5GHz',
         severity: 'critical',
