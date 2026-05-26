@@ -478,9 +478,8 @@ function assignmentToResult(assignment, radios, channelSummary, aps, allAPs, pro
   radios.forEach(r => {
     const key = `${r.apMac}_${r.radio}`;
     const assignedCh = assignment[key];
-    if (assignedCh === undefined) return; // not changed
-
-    if (Number(assignedCh) === Number(r.channel)) return; // no change needed
+    if (assignedCh === undefined) return;
+    if (Number(assignedCh) === Number(r.channel)) return;
 
     plan[key] = {
       suggestedChannel: assignedCh,
@@ -488,15 +487,21 @@ function assignmentToResult(assignment, radios, channelSummary, aps, allAPs, pro
       impact: Math.round(evaluation.metrics.avgCu24 + evaluation.metrics.avgCu5 / 2) || 1,
     };
 
-    // Track unique AP changes
     if (!changedAPs.find(c => c.mac === r.apMac)) {
       const r24 = r.radio === 'ng' ? r : null;
       const r5 = r.radio === 'na' ? r : null;
+      // Compute per-AP impact score: higher CU/CCI/retry = higher impact to fix
+      const apImpact = Math.round(
+        (r.cu_total || 0) * 1.0 +
+        (r.cci_count || 0) * 8.0 +
+        (r.tx_retries_pct || 0) * 0.5 +
+        (r.num_sta || 0) * 2.0
+      );
       changedAPs.push({
         mac: r.apMac,
         name: r.apName,
         floor: apMap[r.apMac] ? apMap[r.apMac].floor : inferFloor(r.apName, 0),
-        healthScore: Math.round(evaluation.pain),
+        healthScore: apImpact,
         changes: `${r.radio === 'ng' ? '2.4G' : '5G'}: ${r.channel}→${assignedCh}`,
         oldNgCh: r24 ? r.channel : null,
         newNgCh: r24 ? assignedCh : null,
@@ -507,6 +512,22 @@ function assignmentToResult(assignment, radios, channelSummary, aps, allAPs, pro
       });
     }
   });
+
+  // SORT by impact descending (worst APs first), then KEEP only top maxChanges
+  changedAPs.sort((a, b) => b.healthScore - a.healthScore);
+  const kept = changedAPs.slice(0, Math.max(1, maxChanges));
+  const removedMacs = new Set(changedAPs.slice(maxChanges).map(ap => ap.mac));
+
+  // Remove plan entries for APs that didn't make the cut
+  if (removedMacs.size > 0) {
+    Object.keys(plan).forEach(pk => {
+      const mac = pk.split('_')[0];
+      if (removedMacs.has(mac)) delete plan[pk];
+    });
+  }
+
+  changedAPs.length = 0;
+  kept.forEach(ap => changedAPs.push(ap));
 
   // Build before metrics
   let befSumCu24 = 0, befCount24 = 0, befMaxCu24 = 0;

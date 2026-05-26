@@ -497,7 +497,7 @@ fn main() {
     let mut generations: u32 = 0;
     let mut last_improvement_gen = 0u32;
     let mut stagnation_counter = 0u32;
-    let mut converged_early = false;
+    let converged_early = false;
 
     // Initial progress
     let elapsed = start.elapsed().as_millis() as u64;
