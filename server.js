@@ -461,7 +461,9 @@ app.get('/api/optimize/progress', async (req, res) => {
       // ── Rust native optimizer ─────────────────────────────────────────────
       const rustBin = path.join(__dirname, 'rust-optimizer', 'target', 'release', 'unifi-ga-optimizer.exe');
       const input = {
-        radios: channelAnalysis.radios.map(r => ({
+        radios: channelAnalysis.radios
+          .filter(r => r.channel != null) // skip radios without a channel
+          .map(r => ({
           apMac: r.apMac, radio: r.radio, channel: r.channel,
           cu_total: r.cu_total || 0, cci_count: r.cci_count || 0,
           tx_retries_pct: r.tx_retries_pct || 0, num_sta: r.num_sta || 0,
@@ -483,10 +485,16 @@ app.get('/api/optimize/progress', async (req, res) => {
 
       const proc = spawn(rustBin, [], { stdio: ['pipe', 'pipe', 'pipe'] });
       let completeData = null;
+      let stdoutBuffer = '';
 
       proc.stdout.on('data', (chunk) => {
-        const lines = chunk.toString().split('\n').filter(Boolean);
+        stdoutBuffer += chunk.toString();
+        const lines = stdoutBuffer.split('\n');
+        // Keep the last incomplete fragment in the buffer
+        stdoutBuffer = lines.pop() || '';
+
         for (const line of lines) {
+          if (!line.trim()) continue;
           try {
             const msg = JSON.parse(line);
             if (msg.type === 'progress') {
@@ -545,14 +553,14 @@ app.get('/api/optimize/progress', async (req, res) => {
         })),
         totalAPs: completeData.total_aps || channelAnalysis.radios.length,
         candidatesConsidered: (completeData.changedAPs || []).length,
-        batchSummary: completeData.batch_summary || {
+        batchSummary: completeData.batchSummary || {
           maxChanges, changesSuggested: (completeData.changedAPs || []).length,
           remainingWorstAPs: Math.max(0, channelAnalysis.radios.length - (completeData.changedAPs || []).length),
           recommendation: 'Rust optimizer completed.',
         },
-        improvementReport: completeData.improvement_report || null,
+        improvementReport: completeData.improvementReport || null,
         proximityGraph: buildProximityGraph(apsModel),
-        searchMeta: completeData.search_meta || { mode: 'rust' },
+        searchMeta: completeData.searchMeta || { mode: 'rust' },
       };
 
       sendEvent('complete', { success: true, timestamp: Date.now(), ...rustResult });

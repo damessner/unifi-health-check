@@ -505,7 +505,8 @@ fn main() {
 
     let time_budget = std::time::Duration::from_millis(input.time_budget_ms);
     let mut report_counter = 0u32;
-    let report_interval = (pop_size as u32 / 2).max(1);
+    let report_interval = (pop_size as u32 * 5).max(10);
+    let mut last_report_ms = 0u64;
 
     // Evolution loop
     while start.elapsed() < time_budget && generations < max_gen {
@@ -579,8 +580,10 @@ fn main() {
 
         // Progress
         report_counter += 1;
-        if report_counter % report_interval == 0 || generations == 1 {
-            let elapsed = start.elapsed().as_millis() as u64;
+        let now_ms = start.elapsed().as_millis() as u64;
+        if (report_counter % report_interval == 0 || generations == 1) && (now_ms - last_report_ms >= 100 || generations <= 5) {
+            last_report_ms = now_ms;
+            let elapsed = now_ms;
             emit_progress(generations, best_eval.pain, best_eval.improvement_pct, best_eval.changes_count, &fitness_scores, elapsed);
         }
     }
