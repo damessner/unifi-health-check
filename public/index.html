@@ -1001,10 +1001,18 @@
                   <option value="15">15</option>
                 </select>
               </label>
+              <label style="font-size:0.8rem; color:var(--text-muted); display:flex; align-items:center; gap:6px;">
+                Engine:
+                <select id="opt-engine" style="background:rgba(255,255,255,0.06); border:1px solid var(--border-glass); color:white; padding:4px 8px; border-radius:6px; font-size:0.8rem;">
+                  <option value="ga">JS GA (4 min)</option>
+                  <option value="deep">Deep (4 h)</option>
+                  <option value="rust">Rust ⚡</option>
+                </select>
+              </label>
               <button class="btn-batch-primary" id="btn-run-optimizer">
                 <i data-lucide="play" style="width:14px; height:14px;"></i> Run Optimizer
               </button>
-              <button class="btn-batch-overnight" id="btn-overnight-optimizer" title="Run deep search for up to 4 hours to find the best possible channel plan">
+              <button class="btn-batch-overnight" id="btn-overnight-optimizer" title="Run deep search for up to 4 hours to find the best possible channel plan" style="display:none;">
                 <i data-lucide="moon" style="width:14px; height:14px;"></i> Overnight
               </button>
               <button class="btn-batch-secondary" id="btn-rescan-reopt" style="display:none;">

@@ -1982,11 +1982,17 @@ async function runBatchOptimizer(forceRefresh = false) {
   const btn = document.getElementById('btn-run-optimizer');
   const rescanBtn = document.getElementById('btn-rescan-reopt');
   const maxChanges = parseInt(document.getElementById('opt-max-changes')?.value || '8', 10);
-  const timeBudgetMs = 240000; // 4 minutes for GA search
+  const engineSelect = document.getElementById('opt-engine');
+  const searchMode = engineSelect ? engineSelect.value : 'ga';
+
+  const timeBudgetMs = searchMode === 'deep' ? 14400000 : 240000; // 4h for deep, 4 min otherwise
+  const popSize = searchMode === 'deep' ? 100 : 40;
+
+  const label = searchMode === 'rust' ? 'Rust' : searchMode === 'deep' ? 'Deep (4h)' : 'GA (4 min)';
 
   if (btn) {
     btn.disabled = true;
-    btn.innerHTML = '<i data-lucide="loader" style="width:14px; height:14px; animation:spin 1s infinite linear;"></i> Optimizing (4 min)...';
+    btn.innerHTML = `<i data-lucide="loader" style="width:14px; height:14px; animation:spin 1s infinite linear;"></i> Optimizing (${label})...`;
   }
   if (rescanBtn) rescanBtn.disabled = true;
 
@@ -1997,8 +2003,8 @@ async function runBatchOptimizer(forceRefresh = false) {
     const params = new URLSearchParams({
       maxChanges: String(maxChanges),
       timeBudgetMs: String(timeBudgetMs),
-      populationSize: '40',
-      searchMode: 'ga',
+      populationSize: String(popSize),
+      searchMode: searchMode,
       force: forceRefresh ? 'true' : 'false',
     });
     const url = `/api/optimize/progress?${params.toString()}`;
