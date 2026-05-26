@@ -1726,6 +1726,7 @@ function saveOptimizerState() {
 /**
  * Build a deterministic signature of an optimizer batch plan.
  * Used to detect repeated identical recommendations across reruns.
+ * Signature uses AP MAC + target channels (newNgCh=2.4GHz, newNaCh=5GHz).
  * @param {Array} changedAPs
  * @returns {string}
  */
@@ -1764,6 +1765,9 @@ async function runBatchOptimizer(forceRefresh = true) {
 
     const planSignature = buildOptimizerPlanSignature(payload.changedAPs);
     const history = Array.isArray(optimizerHistory) ? optimizerHistory : [];
+    if (!Array.isArray(optimizerHistory)) {
+      console.warn('[Optimizer] History state invalid; duplicate-check fallback using empty history.');
+    }
     const lastRound = history[history.length - 1];
     if (planSignature && lastRound && lastRound.planSignature === planSignature) {
       optimizerData = payload;
