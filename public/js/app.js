@@ -1470,6 +1470,10 @@ function renderOptimalGrid() {
     const optCh24 = ap.optCh24;
     const optCh5 = ap.optCh5;
 
+    // Track optimizer batch membership for this AP
+    let isInBatch = false;
+    let batchInfo = null;
+
     const optPower24 = 9;
     const optPower5 = 15;
     const optMinRssi = -75;
@@ -1598,9 +1602,6 @@ function renderOptimalGrid() {
         }
       }
 
-      // Check if this AP is in the current optimizer batch
-      let isInBatch = false;
-      let batchInfo = null;
       if (optimizerData && Array.isArray(optimizerData.changedAPs)) {
         batchInfo = optimizerData.changedAPs.find(c => c.mac === ap.mac);
         isInBatch = !!batchInfo;
