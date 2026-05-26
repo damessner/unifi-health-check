@@ -1865,14 +1865,74 @@ function saveOptimizerState() {
   } catch (e) { /* quota exceeded, ignore */ }
 }
 
+// ── GA Search Progress UI ────────────────────────────────────────────────────
+
+let gaEventSource = null;
+
+function showGaProgress() {
+  const panel = document.getElementById('ga-progress-panel');
+  const placeholder = document.getElementById('batch-optimizer-placeholder');
+  const results = document.getElementById('batch-optimizer-results');
+  if (panel) panel.style.display = 'block';
+  if (placeholder) placeholder.style.display = 'block';
+  if (results) results.style.display = 'none';
+}
+
+function hideGaProgress() {
+  const panel = document.getElementById('ga-progress-panel');
+  if (panel) panel.style.display = 'none';
+}
+
+function updateGaProgressUI(p) {
+  const gen = document.getElementById('ga-generation');
+  const pop = document.getElementById('ga-population');
+  const bp = document.getElementById('ga-best-pain');
+  const imp = document.getElementById('ga-improvement');
+  const chg = document.getElementById('ga-changes');
+  const elap = document.getElementById('ga-elapsed');
+  const fill = document.getElementById('ga-progress-fill');
+  const status = document.getElementById('ga-status');
+
+  if (gen) gen.textContent = p.generation != null ? String(p.generation) : '0';
+  if (pop) pop.textContent = p.populationSize != null ? String(p.populationSize) : '—';
+  if (bp) bp.textContent = p.bestPain != null ? String(p.bestPain) : '—';
+  if (imp) imp.textContent = p.bestImprovementPct != null ? `${p.bestImprovementPct}%` : '—';
+  if (chg) chg.textContent = p.bestChangesCount != null ? String(p.bestChangesCount) : '—';
+  if (elap) elap.textContent = p.elapsedMs != null ? `${Math.round(p.elapsedMs / 1000)}s` : '0s';
+  if (fill && p.totalBudgetMs > 0) {
+    const pct = Math.min(100, Math.round((p.elapsedMs / p.totalBudgetMs) * 100));
+    fill.style.width = `${pct}%`;
+  }
+  if (status && p.statusText) status.textContent = p.statusText;
+}
+
+function addGaLogEntry(text, type) {
+  const log = document.getElementById('ga-log');
+  if (!log) return;
+  const entry = document.createElement('div');
+  entry.className = `ga-log-entry ${type || 'info'}`;
+  entry.textContent = text;
+  log.appendChild(entry);
+  log.scrollTop = log.scrollHeight;
+  // Keep last 50 entries
+  while (log.children.length > 50) log.removeChild(log.firstChild);
+}
+
+function clearGaLog() {
+  const log = document.getElementById('ga-log');
+  if (log) log.innerHTML = '';
+}
+
 /**
  * Run the constrained batch optimizer via the API.
+ * Uses Server-Sent Events (SSE) for real-time progress when in GA mode,
+ * or falls back to heuristic fetch for the fast path.
  */
 async function runBatchOptimizer(forceRefresh = false) {
   const btn = document.getElementById('btn-run-optimizer');
   const rescanBtn = document.getElementById('btn-rescan-reopt');
   const maxChanges = parseInt(document.getElementById('opt-max-changes')?.value || '8', 10);
-  const optimizerRunMs = 150000; // 2.5 minutes generational search
+  const timeBudgetMs = 150000; // 2.5 minutes for GA search
 
   if (btn) {
     btn.disabled = true;
@@ -1880,74 +1940,128 @@ async function runBatchOptimizer(forceRefresh = false) {
   }
   if (rescanBtn) rescanBtn.disabled = true;
 
-  // Update workflow steps to show "analyzing"
   setWorkflowStep('analyze', 'active');
 
-  try {
-    const url = `/api/optimize?maxChanges=${maxChanges}&force=${forceRefresh}&searchMode=generational&timeBudgetMs=${optimizerRunMs}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP status error: ${res.status}`);
-
-    const payload = await res.json();
-    if (!payload.success) throw new Error(payload.error || 'Optimization failed');
-
-    currentRound++;
-    saveOptimizerState();
-
-    // Tag payload with round info
-    payload._round = currentRound;
-    payload._timestamp = Date.now();
-    payload._maxChanges = maxChanges;
-
-    // Store in history
-    optimizerHistory.push({
-      round: currentRound,
-      timestamp: payload._timestamp,
-      changedAPs: payload.changedAPs.map(ap => ({
-        mac: ap.mac, name: ap.name, floor: ap.floor, changes: ap.changes,
-        oldNgCh: ap.oldNgCh, newNgCh: ap.newNgCh, oldNaCh: ap.oldNaCh, newNaCh: ap.newNaCh
-      })),
-      improvement: payload.improvementReport.estimatedImprovementPct,
-      cciReduction: payload.improvementReport.deltas.cciReduction,
-      maxChanges,
-      totalAPs: payload.totalAPs
+  // Use SSE for GA mode with real-time progress
+  return new Promise((resolve, reject) => {
+    const params = new URLSearchParams({
+      maxChanges: String(maxChanges),
+      timeBudgetMs: String(timeBudgetMs),
+      populationSize: '40',
+      force: forceRefresh ? 'true' : 'false',
     });
-    saveOptimizerState();
+    const url = `/api/optimize/progress?${params.toString()}`;
 
-    optimizerData = payload;
-    console.log('[Optimizer] Round', currentRound, 'plan computed:', optimizerData);
+    // Show GA progress panel
+    showGaProgress();
+    clearGaLog();
+    addGaLogEntry('Connecting to optimizer engine...', 'info');
 
-    setWorkflowStep('analyze', 'done');
-    setWorkflowStep('apply', 'active');
+    let payload = null;
+    gaEventSource = new EventSource(url);
 
-    updateBatchOptimizerDisplay();
-    renderOptimalGrid();
-    updateBatchHistoryUI();
+    gaEventSource.addEventListener('connected', (e) => {
+      const data = JSON.parse(e.data);
+      addGaLogEntry(`Connected. ${data.totalAPs} APs, ${data.totalRadios} radios, ${data.populationSize} population.`, 'info');
+      addGaLogEntry('GA searching all channel combinations...', 'info');
+    });
 
-    const changedCount = payload.changedAPs.length;
-    const imp = payload.improvementReport.estimatedImprovementPct;
-    const gens = payload.searchMeta && payload.searchMeta.generationsTried
-      ? payload.searchMeta.generationsTried
-      : 1;
-    const durSec = payload.searchMeta && payload.searchMeta.durationMs
-      ? Math.max(1, Math.round(payload.searchMeta.durationMs / 1000))
-      : null;
-    const searchInfo = durSec ? ` (${gens} generations, ${durSec}s search)` : '';
-    showToast(`Round ${currentRound}: ${changedCount} APs selected, ~${imp}% estimated improvement${searchInfo}. Apply, then re-scan.`, 'success');
+    gaEventSource.addEventListener('progress', (e) => {
+      const p = JSON.parse(e.data);
+      updateGaProgressUI(p);
+    });
 
-  } catch (err) {
-    console.error('[Optimizer] Run failed:', err);
-    showToast(`Optimizer error: ${escapeHtml(err.message)}`, 'error');
-    setWorkflowStep('analyze', 'error');
-    updateBatchOptimizerDisplay(true, err.message);
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.innerHTML = '<i data-lucide="play" style="width:14px; height:14px;"></i> Run Optimizer';
-    }
-    if (rescanBtn) rescanBtn.disabled = false;
-    if (window.lucide) window.lucide.createIcons();
-  }
+    gaEventSource.addEventListener('complete', (e) => {
+      payload = JSON.parse(e.data);
+      gaEventSource.close();
+      gaEventSource = null;
+      hideGaProgress();
+
+      if (!payload.success) {
+        setWorkflowStep('analyze', 'error');
+        updateBatchOptimizerDisplay(true, payload.error || 'Optimization failed');
+        showToast(`Optimizer error: ${escapeHtml(payload.error || 'Unknown error')}`, 'error');
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="play" style="width:14px; height:14px;"></i> Run Optimizer'; }
+        if (rescanBtn) rescanBtn.disabled = false;
+        if (window.lucide) window.lucide.createIcons();
+        reject(new Error(payload.error || 'Optimization failed'));
+        return;
+      }
+
+      // Process completed result
+      processOptimizerResult(payload, maxChanges);
+      resolve();
+    });
+
+    gaEventSource.addEventListener('error', (e) => {
+      if (gaEventSource) {
+        gaEventSource.close();
+        gaEventSource = null;
+      }
+      hideGaProgress();
+      const errMsg = payload ? (payload.error || 'Connection lost during optimization') : 'SSE connection failed';
+      console.error('[Optimizer] SSE error:', errMsg);
+      showToast(`Optimizer error: ${escapeHtml(errMsg)}`, 'error');
+      setWorkflowStep('analyze', 'error');
+      updateBatchOptimizerDisplay(true, errMsg);
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="play" style="width:14px; height:14px;"></i> Run Optimizer'; }
+      if (rescanBtn) rescanBtn.disabled = false;
+      if (window.lucide) window.lucide.createIcons();
+      reject(new Error(errMsg));
+    });
+  });
+}
+
+/**
+ * Process a completed optimizer result (shared between GA and heuristic paths).
+ */
+function processOptimizerResult(payload, maxChanges) {
+  currentRound++;
+  saveOptimizerState();
+
+  payload._round = currentRound;
+  payload._timestamp = Date.now();
+  payload._maxChanges = maxChanges;
+
+  optimizerHistory.push({
+    round: currentRound,
+    timestamp: payload._timestamp,
+    changedAPs: payload.changedAPs.map(ap => ({
+      mac: ap.mac, name: ap.name, floor: ap.floor, changes: ap.changes,
+      oldNgCh: ap.oldNgCh, newNgCh: ap.newNgCh, oldNaCh: ap.oldNaCh, newNaCh: ap.newNaCh
+    })),
+    improvement: payload.improvementReport.estimatedImprovementPct,
+    cciReduction: payload.improvementReport.deltas.cciReduction,
+    maxChanges,
+    totalAPs: payload.totalAPs
+  });
+  saveOptimizerState();
+
+  optimizerData = payload;
+  console.log('[Optimizer] Round', currentRound, 'plan computed:', optimizerData);
+
+  setWorkflowStep('analyze', 'done');
+  setWorkflowStep('apply', 'active');
+
+  updateBatchOptimizerDisplay();
+  renderOptimalGrid();
+  updateBatchHistoryUI();
+
+  const changedCount = payload.changedAPs.length;
+  const imp = payload.improvementReport.estimatedImprovementPct;
+  const sm = payload.searchMeta || {};
+  const gens = sm.generationsTried || sm.bestGeneration || 1;
+  const durSec = sm.durationMs ? Math.max(1, Math.round(sm.durationMs / 1000)) : null;
+  const pop = sm.populationSize ? `pop ${sm.populationSize}, ` : '';
+  const searchInfo = durSec ? ` (${pop}${gens} generations, ${durSec}s)` : '';
+  showToast(`Round ${currentRound}: ${changedCount} APs selected, ~${imp}% estimated improvement${searchInfo}. Apply, then re-scan.`, 'success');
+
+  // Re-enable buttons
+  const btn = document.getElementById('btn-run-optimizer');
+  const rescanBtn = document.getElementById('btn-rescan-reopt');
+  if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="play" style="width:14px; height:14px;"></i> Run Optimizer'; }
+  if (rescanBtn) rescanBtn.disabled = false;
+  if (window.lucide) window.lucide.createIcons();
 }
 
 /**
@@ -2296,6 +2410,13 @@ function selectAllBatchAPs() {
  * Reset all optimizer state (history, rounds).
  */
 function resetOptimizerState() {
+  // Abort any running GA search
+  if (gaEventSource) {
+    gaEventSource.close();
+    gaEventSource = null;
+  }
+  hideGaProgress();
+
   optimizerData = null;
   optimizerHistory = [];
   currentRound = 0;

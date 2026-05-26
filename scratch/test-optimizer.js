@@ -96,6 +96,8 @@ function buildChannelSummary(radios) {
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
+async function main() {
+
 console.log('\n=== Channel List Exports ===');
 assert('CHANNELS_24 has [1,6,11]',
   JSON.stringify(optimizer.CHANNELS_24) === '[1,6,11]');
@@ -406,8 +408,8 @@ console.log('\n=== Default Options ===');
   assert('Default options — result valid', result.changedAPs.length >= 0);
 }
 
-console.log('\n=== Generational Mode ===');
-{
+console.log('\n=== Genetic Algorithm Mode ===');
+await (async function testGeneticOptimizer() {
   const aps = [
     makeAP('ap-01', 'EG-Flur', 1, 40, { cu24: 82, cu5: 88, cci5: 8 }),
     makeAP('ap-02', 'EG-KlasseA', 6, 40, { cu24: 78, cu5: 84, cci5: 7 }),
@@ -420,20 +422,48 @@ console.log('\n=== Generational Mode ===');
       { cu: ap.radios.na.cu_total, cci: ap.radios.na.cci_count }),
   ]);
   const chSummary = buildChannelSummary(radios);
-  const result = optimizer.runConstrainedOptimizer(radios, chSummary, aps, {
-    searchMode: 'generational',
+
+  // Test evaluateAssignment directly
+  const emptyAssignment = {};
+  const emptyEval = optimizer.evaluateAssignment(radios, emptyAssignment, chSummary, 3);
+  assert('evaluateAssignment returns object with pain', typeof emptyEval.pain === 'number');
+  assert('evaluateAssignment returns improvementPct', typeof emptyEval.improvementPct === 'number');
+  assert('evaluateAssignment returns metrics', emptyEval.metrics && typeof emptyEval.metrics.avgCu24 === 'number');
+
+  // Test full GA with progress
+  let progressCount = 0;
+  const result = await optimizer.runGeneticOptimizer(radios, chSummary, aps, {
     maxChanges: 3,
     timeBudgetMs: 1200,
-    generationLimit: 500,
-    minImprovementThreshold: 0,
-    enforceMinImprovement: true
+    populationSize: 20,
+  }, (progress) => {
+    progressCount++;
   });
 
-  assert('Generational mode returns searchMeta', !!result.searchMeta);
-  assert('Generational mode recorded mode', result.searchMeta.mode === 'generational');
-  assert('Generational mode tries >1 generation', result.searchMeta.generationsTried >= 2);
-  assert('Generational mode respects duration floor', result.searchMeta.durationMs >= 0);
-}
+  assert('GA mode returns result with plan', !!result.plan);
+  assert('GA mode returns searchMeta', !!result.searchMeta);
+  assert('GA mode recorded mode', result.searchMeta.mode === 'ga');
+  assert('GA mode has bestGeneration', typeof result.searchMeta.bestGeneration === 'number');
+  assert('GA mode has objectiveScore', typeof result.searchMeta.objectiveScore === 'number');
+  assert('GA mode has improvementReport', !!result.improvementReport);
+  assert('GA mode has estimatedImprovementPct',
+    typeof result.improvementReport.estimatedImprovementPct === 'number');
+  assert('GA mode progress callback was called', progressCount > 0);
+  assert('GA mode durationMs is positive', result.searchMeta.durationMs > 0);
+  assert('GA mode generationsTried > 1', result.searchMeta.generationsTried >= 2);
+  assert('GA mode batchSummary present', !!result.batchSummary);
+  assert('GA mode proximityGraph present', !!result.proximityGraph);
+  assert('GA mode totalAPs matches', result.totalAPs === 3);
+
+  // Test generational mode sync fallback
+  const syncResult = optimizer.runConstrainedOptimizer(radios, chSummary, aps, {
+    searchMode: 'generational',
+    maxChanges: 3,
+  });
+  assert('Sync fallback has searchMeta', !!syncResult.searchMeta);
+  assert('Sync fallback mode is ga_sync_fallback',
+    syncResult.searchMeta.mode === 'ga_sync_fallback');
+})();
 
 console.log('\n=== Change Plan Has Correct Structure ===');
 {
@@ -463,7 +493,14 @@ console.log('\n=== Change Plan Has Correct Structure ===');
 
 // ── Summary ──────────────────────────────────────────────────────────────
 
-console.log(`\n${'='.repeat(50)}`);
-console.log(`Results: ${passed} passed, ${failed} failed`);
-console.log(`${'='.repeat(50)}\n`);
-process.exit(failed > 0 ? 1 : 0);
+}
+
+main().then(() => {
+  console.log(`\n${'='.repeat(50)}`);
+  console.log(`Results: ${passed} passed, ${failed} failed`);
+  console.log(`${'='.repeat(50)}\n`);
+  process.exit(failed > 0 ? 1 : 0);
+}).catch(err => {
+  console.error('Fatal test error:', err);
+  process.exit(1);
+});

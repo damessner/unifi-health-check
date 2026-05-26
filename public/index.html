@@ -19,6 +19,95 @@
   
   <!-- CSS Stylesheet -->
   <link rel="stylesheet" href="css/style.css">
+  <style>
+.ga-progress-panel {
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: 12px;
+  padding: 18px;
+  margin-top: 16px;
+  backdrop-filter: blur(8px);
+}
+.ga-progress-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.ga-progress-title {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #e2e8f0;
+}
+.ga-progress-status {
+  font-size: 0.78rem;
+  color: #818cf8;
+  font-weight: 600;
+  padding: 3px 10px;
+  background: rgba(99, 102, 241, 0.15);
+  border-radius: 20px;
+}
+.ga-progress-bar-track {
+  width: 100%;
+  height: 8px;
+  background: rgba(255,255,255,0.08);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+.ga-progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #6366f1, #8b5cf6);
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+.ga-progress-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.ga-metric {
+  flex: 1;
+  min-width: 90px;
+  background: rgba(255,255,255,0.04);
+  border-radius: 8px;
+  padding: 8px 12px;
+  text-align: center;
+}
+.ga-metric-label {
+  display: block;
+  font-size: 0.68rem;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 3px;
+}
+.ga-metric-value {
+  display: block;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #e2e8f0;
+  font-family: 'JetBrains Mono', 'Consolas', monospace;
+}
+.ga-progress-log {
+  max-height: 100px;
+  overflow-y: auto;
+  background: rgba(0,0,0,0.2);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+.ga-log-entry {
+  padding: 2px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.ga-log-entry:last-child { border-bottom: none; }
+.ga-log-entry.info { color: #60a5fa; }
+.ga-log-entry.success { color: #34d399; }
+.ga-log-entry.error { color: #f87171; }
+  </style>
 </head>
 <body>
 
@@ -899,6 +988,47 @@
                 Workflow: Run → Apply changes on controller → Re-scan → Re-optimize (repeat until healthy)
               </p>
             </div>
+
+          <!-- GA Search Progress Panel (visible during generational/GA optimization) -->
+          <div id="ga-progress-panel" class="ga-progress-panel" style="display:none;">
+            <div class="ga-progress-header">
+              <span class="ga-progress-title"><i data-lucide="search" style="width:16px;height:16px;display:inline-block;vertical-align:middle;margin-right:6px;"></i> Genetic Algorithm Search</span>
+              <span class="ga-progress-status" id="ga-status">Initializing...</span>
+            </div>
+            <div class="ga-progress-bar-track">
+              <div class="ga-progress-bar-fill" id="ga-progress-fill" style="width:0%;"></div>
+            </div>
+            <div class="ga-progress-metrics">
+              <div class="ga-metric">
+                <span class="ga-metric-label">Generation</span>
+                <span class="ga-metric-value" id="ga-generation">0</span>
+              </div>
+              <div class="ga-metric">
+                <span class="ga-metric-label">Population</span>
+                <span class="ga-metric-value" id="ga-population">0</span>
+              </div>
+              <div class="ga-metric">
+                <span class="ga-metric-label">Best Pain Score</span>
+                <span class="ga-metric-value" id="ga-best-pain">—</span>
+              </div>
+              <div class="ga-metric">
+                <span class="ga-metric-label">Est. Improvement</span>
+                <span class="ga-metric-value" id="ga-improvement">—</span>
+              </div>
+              <div class="ga-metric">
+                <span class="ga-metric-label">Changes Found</span>
+                <span class="ga-metric-value" id="ga-changes">—</span>
+              </div>
+              <div class="ga-metric">
+                <span class="ga-metric-label">Elapsed</span>
+                <span class="ga-metric-value" id="ga-elapsed">0s</span>
+              </div>
+            </div>
+            <div class="ga-progress-log" id="ga-log">
+              <div class="ga-log-entry info">GA optimizer will search all channel combinations across all APs. Results stream in real time.</div>
+            </div>
+          </div>
+
           </div>
 
           <!-- Results after optimization run -->

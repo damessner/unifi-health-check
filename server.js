@@ -248,162 +248,90 @@ app.get('/api/history', (req, res) => {
     success: true,
     samples: historyBuffer,
     count: historyBuffer.length
-  });
+    });
 });
 
 /**
- * API: Get connection and health status
+ * SSE endpoint: Run the GA optimizer with real-time progress streaming.
+ * GET /api/optimize/progress?maxChanges=8&timeBudgetMs=150000&populationSize=40
+ *
+ * Streams `data:` events:
+ *   - `event: progress` — periodic status updates during search
+ *   - `event: complete` — final result when done
+ *   - `event: error` — if something fails
+ *
+ * The frontend uses EventSource to consume this.
  */
-app.get('/api/health', async (req, res) => {
-  try {
-    await unifiClient.login();
-    res.json({
-      status: 'healthy',
-      unifiConnected: true,
-      controller: `${config.unifi.host}:${config.unifi.port}`,
-      site: config.unifi.site
-    });
-  } catch (err) {
-    res.status(500).json({
-      status: 'degraded',
-      unifiConnected: false,
-      error: err.message
-    });
-  }
-});
-
-/**
- * API: Get aggregated diagnostic analysis for channels and clients
- */
-app.get('/api/diagnostics', async (req, res) => {
-  try {
-    const force = req.query.force === 'true';
-    const { devices, clients } = await getFreshData(force);
-
-    console.log(`[Analyzer] Processing stats for ${devices.length} devices and ${clients.length} clients...`);
-
-    const channelAnalysis = analyzer.analyzeChannels(devices);
-    const clientAnalysis = analyzer.analyzeClients(clients, devices);
-    const apsModel = buildApsModel(channelAnalysis);
-
-    if (Date.now() - cache.lastFetch < FRESH_DATA_THRESHOLD_MS) {
-      pushHistorySnapshot(channelAnalysis, clientAnalysis);
-    }
-
-    res.json({
-      success: true,
-      timestamp: Date.now(),
-      cacheAgeMs: Date.now() - cache.lastFetch,
-      aps: apsModel,
-      channels: channelAnalysis,
-      clients: clientAnalysis
-    });
-  } catch (err) {
-    console.error('[API Error] Diagnostics compilation failed:', err);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to compile network diagnostics from UniFi Controller.',
-      details: err.message
-    });
-  }
-});
-
-/**
- * API: Export channel optimization + client report as XLSX
- */
-app.get('/api/export/xlsx', async (req, res) => {
+app.get('/api/optimize/progress', async (req, res) => {
   try {
     const force = req.query.force === 'true';
     const rawMax = parseInt(req.query.maxChanges, 10);
-    const maxChanges = (Number.isFinite(rawMax) && rawMax > 0 && rawMax <= 100)
-      ? rawMax
-      : config.opt.maxChanges;
+    const maxChanges = (Number.isFinite(rawMax) && rawMax > 0 && rawMax <= 100) ? rawMax : 10;
+    const rawBudget = parseInt(req.query.timeBudgetMs, 10);
+    const timeBudgetMs = (Number.isFinite(rawBudget) && rawBudget >= 1000 && rawBudget <= 300000) ? rawBudget : 150000;
+    const rawPop = parseInt(req.query.populationSize, 10);
+    const populationSize = (Number.isFinite(rawPop) && rawPop >= 10 && rawPop <= 200) ? rawPop : 40;
 
     const { devices, clients } = await getFreshData(force);
     const channelAnalysis = analyzer.analyzeChannels(devices);
     const clientAnalysis  = analyzer.analyzeClients(clients, devices);
-
     const apsModel = buildApsModel(channelAnalysis);
 
-    const diagnosticsData = {
-      channels: channelAnalysis,
-      clients:  clientAnalysis,
-      aps: apsModel
+    // SSE headers
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    // Helper to write an SSE event
+    const sendEvent = (event, data) => {
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     };
 
-    const buffer = await xlsxExporter.generateXlsx(diagnosticsData, { maxChanges });
-    const ts = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
-    const filename = `unifi_optimization_${ts}.xlsx`;
+    // Send initial connected event
+    sendEvent('connected', {
+      maxChanges,
+      timeBudgetMs,
+      populationSize,
+      totalAPs: apsModel.length,
+      totalRadios: channelAnalysis.radios.length,
+    });
 
-    res.setHeader('Content-Type',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Content-Length', buffer.length);
-    res.send(buffer);
-    console.log(`[Export] XLSX report generated: ${filename} (${Math.round(buffer.length / 1024)} KB)`);
-  } catch (err) {
-    console.error('[Export] XLSX generation failed:', err);
-    res.status(500).json({ success: false, error: 'Failed to generate XLSX report.', details: err.message });
-  }
-});
-
-/**
- * API: Run the constrained batch optimizer and return the plan as JSON.
- */
-app.get('/api/optimize', async (req, res) => {
-  try {
-    const force = req.query.force === 'true';
-    const rawMax2 = parseInt(req.query.maxChanges, 10);
-    const maxChanges = (Number.isFinite(rawMax2) && rawMax2 > 0 && rawMax2 <= 100)
-      ? rawMax2
-      : config.opt.maxChanges;
-    const rawMin = parseInt(req.query.minImprovement, 10);
-    const minImprovementThreshold = (Number.isFinite(rawMin) && rawMin >= 0 && rawMin <= 100)
-      ? rawMin
-      : 5;
-
-    const searchMode = String(req.query.searchMode || 'heuristic').toLowerCase();
-    const rawBudget = parseInt(req.query.timeBudgetMs, 10);
-    const timeBudgetMs = (Number.isFinite(rawBudget) && rawBudget >= 1000 && rawBudget <= 300000)
-      ? rawBudget
-      : 150000;
-
-    const rawGen = parseInt(req.query.generationLimit, 10);
-    const generationLimit = (Number.isFinite(rawGen) && rawGen >= 1 && rawGen <= 200000)
-      ? rawGen
-      : 20000;
-
-    const { devices, clients } = await getFreshData(force);
-    const channelAnalysis = analyzer.analyzeChannels(devices);
-    const clientAnalysis  = analyzer.analyzeClients(clients, devices);
-    const apsModel = buildApsModel(channelAnalysis);
-
-    const result = optimizer.runConstrainedOptimizer(
+    // Run GA optimizer with progress callback
+    const result = await optimizer.runGeneticOptimizer(
       channelAnalysis.radios,
       channelAnalysis.summary,
       apsModel,
-      {
-        maxChanges,
-        minImprovementThreshold,
-        searchMode,
-        timeBudgetMs,
-        generationLimit,
-        enforceMinImprovement: true
+      { maxChanges, timeBudgetMs, populationSize },
+      (progress) => {
+        // Stream progress to the frontend
+        sendEvent('progress', progress);
       }
     );
 
-    res.json({
+    // Send final complete event with full result
+    sendEvent('complete', {
       success: true,
       timestamp: Date.now(),
-      ...result
+      ...result,
     });
+
+    res.end();
   } catch (err) {
-    console.error('[Optimizer] Optimization run failed:', err);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to run optimization engine.',
-      details: err.message
-    });
+    // Try to send error as SSE event if headers already sent
+    try {
+      if (res.headersSent) {
+        res.write(`event: error\ndata: ${JSON.stringify({ error: err.message })}\n\n`);
+        res.end();
+      } else {
+        res.status(500).json({ success: false, error: err.message });
+      }
+    } catch (_) {
+      // Client may have disconnected
+    }
+    console.error('[SSE] Optimizer progress error:', err.message);
   }
 });
 

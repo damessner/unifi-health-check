@@ -5,22 +5,16 @@
  *
  * CONSTRAINED JOINT-BAND PROXIMITY-AWARE BATCH OPTIMIZER
  *
- * Replaces the old per-radio greedy optimizer with an AP-level batch optimizer
- * that jointly considers both 2.4GHz and 5GHz radios of each AP, limits changes
- * to a manageable number per round, and uses physical proximity to minimize
- * co-channel interference between adjacent APs.
+ * Modes:
+ *   heuristic  — fast deterministic single-pass (default, used by XLSX exports)
+ *   ga         — full Genetic Algorithm with population, crossover, mutation,
+ *                tournament selection, elitism. Explores all APs globally,
+ *                not just top-N candidates. Async with progress callbacks.
  *
- * Key improvements over the old runOptimizer:
- *   1. AP-level: treats both radios of an AP as a unit (joint assignment)
- *   2. Change budget: configurable maxChanges (default 8) per optimization round
- *   3. Proximity-aware: uses neighbor graph to penalize adjacent-channel conflicts
- *   4. Stable-first: prefers keeping current channels unless clear improvement
- *   5. Improvement report: computes before/after metrics to show expected gains
- *   6. Floor separation: staggers channels across floors for 3D interference reduction
- *
- * Workflow:
- *   Run optimizer → get plan for top-N worst APs → apply changes → re-scan → repeat
- *   Each round fixes the worst offenders; subsequent rounds pick new worst APs.
+ * The GA mode is designed for thorough search over the enormous
+ * channel-assignment space. It maintains a diverse population of complete
+ * AP channel plans and evolves them using domain-specific crossover and
+ * mutation operators.
  */
 
 // ── Valid channels ────────────────────────────────────────────────────────────
@@ -34,30 +28,32 @@ const CHANNELS_5 = [
 
 // ── Scoring weights ───────────────────────────────────────────────────────────
 const WEIGHTS = {
-  cuUtil: 1.0,       // channel utilization per %
-  cci: 8.0,          // co-channel interference per count
-  retry: 0.5,        // TX retry percentage
-  neighborConflict: 5.0,  // per overlapping neighbor channel
-  clientCount: 2.0,  // per associated client
+  cuUtil: 1.0,
+  cci: 8.0,
+  retry: 0.5,
+  neighborConflict: 5.0,
+  clientCount: 2.0,
 };
 
-// ── Combo scoring penalties ──────────────────────────────────────────────────
 const COMBO_PENALTIES = {
-  ngOverlap: 12,     // 2.4GHz overlap with neighbor
-  naOverlap: 16,     // 5GHz overlap with neighbor (higher because more channels available)
-  loadImbalance: 5,  // penalty per extra AP already on this channel
-  sameFloorSameCh: 8, // penalty for same-floor same-channel
-  changeCost: 8,     // penalty for changing from current (stability bias)
+  ngOverlap: 12,
+  naOverlap: 16,
+  loadImbalance: 5,
+  sameFloorSameCh: 8,
+  changeCost: 8,
 };
 
-// Default max APs to change per optimization run
 const DEFAULT_MAX_CHANGES = 10;
-
-// Minimum estimated improvement (%) to suggest a change
 const MIN_IMPROVEMENT_THRESHOLD = 5;
-
-// Estimated CU reduction per co-channel peer removed
 const CU_REDUCTION_PER_CCI = 8;
+
+// GA defaults
+const GA_POPULATION_SIZE = 40;
+const GA_ELITE_COUNT = 4;
+const GA_TOURNAMENT_SIZE = 3;
+const GA_MUTATION_RATE = 0.25;
+const GA_CROSSOVER_RATE = 0.8;
+const GA_STAGNATION_LIMIT = 200;
 
 // ── Helper functions ─────────────────────────────────────────────────────────
 
@@ -67,7 +63,6 @@ function channelsOverlap24(ch1, ch2) {
 
 function channelsOverlap5(ch1, bw1, ch2, bw2) {
   if (!Number.isFinite(ch1) || !Number.isFinite(ch2)) return false;
-  // Default to 80 MHz for modern APs (was 40 MHz, underestimates overlap)
   const halfSpan1 = (Number(bw1) || 80) / 10;
   const halfSpan2 = (Number(bw2) || 80) / 10;
   return Math.abs(ch1 - ch2) <= (halfSpan1 + halfSpan2);
@@ -75,13 +70,9 @@ function channelsOverlap5(ch1, bw1, ch2, bw2) {
 
 function inferFloor(name = '', index = 0) {
   const n = String(name).toUpperCase();
-  // German + English ground floor
   if (/EG\b|GROUND|ERDGESCHOSS|0OG|0\.OG/.test(n)) return 'EG';
-  // German + English first floor
   if (/1OG\b|1\.OG|FIRST|1ST/.test(n)) return '1OG';
-  // German + English second floor
   if (/2OG\b|2\.OG|SECOND|2ND/.test(n)) return '2OG';
-  // Numeric pattern: FG-0, Floor-1, etc.
   const numMatch = n.match(/[FG][_\-\s]*(\d+)/i);
   if (numMatch) {
     const num = parseInt(numMatch[1], 10);
@@ -92,20 +83,12 @@ function inferFloor(name = '', index = 0) {
   return ['EG', '1OG', '2OG'][index % 3];
 }
 
-// ── Proximity graph builder (server-side replica of frontend) ─────────────────
-
 function buildProximityGraph(aps) {
   const graph = {};
   const apList = Array.isArray(aps) ? aps : [];
-
   apList.forEach((ap, i) => {
-    graph[ap.mac] = {
-      name: ap.name,
-      floor: inferFloor(ap.name, i),
-      neighbors: []
-    };
+    graph[ap.mac] = { name: ap.name, floor: inferFloor(ap.name, i), neighbors: [] };
   });
-
   apList.forEach((ap1) => {
     const scores = [];
     apList.forEach((ap2) => {
@@ -115,230 +98,437 @@ function buildProximityGraph(aps) {
       const ng2 = ap2.radios && ap2.radios.ng;
       const na1 = ap1.radios && ap1.radios.na;
       const na2 = ap2.radios && ap2.radios.na;
-
       if (channelsOverlap24(ng1 && ng1.channel, ng2 && ng2.channel)) score += 3;
       if (channelsOverlap5(na1 && na1.channel, na1 && na1.bw, na2 && na2.channel, na2 && na2.bw)) score += 4;
       if (ng1 && ng2 && ng1.cu_total && ng2.cu_total)
         score += Math.max(0, 2 - Math.abs(ng1.cu_total - ng2.cu_total) / 50);
       if (na1 && na2 && na1.cu_total && na2.cu_total)
         score += Math.max(0, 2 - Math.abs(na1.cu_total - na2.cu_total) / 50);
-
       if (score > 0) scores.push({ mac: ap2.mac, score });
     });
-
-    scores
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 4)
+    scores.sort((a, b) => b.score - a.score).slice(0, 4)
       .forEach((entry) => graph[ap1.mac].neighbors.push(entry.mac));
   });
-
   return graph;
 }
 
-// ── AP Health Scoring ────────────────────────────────────────────────────────
-
-/**
- * Compute a composite health score for an AP (higher = worse).
- * Considers both radio bands, CCI, retries, neighbor conflicts, and client load.
- *
- * @param {Object} ap - AP object with radios
- * @param {Object} proximityGraph - Pre-built proximity graph
- * @param {Array} allAPs - Full AP list for neighbor lookups (passed explicitly, no global)
- */
 function scoreAP(ap, proximityGraph, allAPs) {
   const r24 = ap.radios && ap.radios.ng;
   const r5 = ap.radios && ap.radios.na;
-
   const cu24 = r24 ? r24.cu_total || 0 : 0;
   const cu5 = r5 ? r5.cu_total || 0 : 0;
   const maxCu = Math.max(cu24, cu5);
-
   const cci24 = r24 ? r24.cci_count || 0 : 0;
   const cci5 = r5 ? r5.cci_count || 0 : 0;
   const totalCci = cci24 + cci5;
-
-  const retry24 = r24 ? r24.tx_retries_pct || 0 : 0;
-  const retry5 = r5 ? r5.tx_retries_pct || 0 : 0;
-  const maxRetry = Math.max(retry24, retry5);
-
+  const maxRetry = Math.max(r24 ? r24.tx_retries_pct || 0 : 0, r5 ? r5.tx_retries_pct || 0 : 0);
   const clients = (r24 ? r24.num_sta || 0 : 0) + (r5 ? r5.num_sta || 0 : 0);
-
   let neighborConflicts = 0;
   const graphEntry = proximityGraph && proximityGraph[ap.mac];
   if (graphEntry) {
     graphEntry.neighbors.forEach(nMac => {
       const neighborAP = allAPs.find(a => a.mac === nMac);
       if (!neighborAP) return;
-
-      if (r24 && neighborAP.radios && neighborAP.radios.ng &&
-          r24.channel && neighborAP.radios.ng.channel) {
-        if (channelsOverlap24(r24.channel, neighborAP.radios.ng.channel))
-          neighborConflicts++;
+      if (r24 && neighborAP.radios && neighborAP.radios.ng && r24.channel && neighborAP.radios.ng.channel) {
+        if (channelsOverlap24(r24.channel, neighborAP.radios.ng.channel)) neighborConflicts++;
       }
-      if (r5 && neighborAP.radios && neighborAP.radios.na &&
-          r5.channel && neighborAP.radios.na.channel) {
-        if (channelsOverlap5(r5.channel, r5.bw, neighborAP.radios.na.channel,
-                            neighborAP.radios.na && neighborAP.radios.na.bw))
-          neighborConflicts++;
+      if (r5 && neighborAP.radios && neighborAP.radios.na && r5.channel && neighborAP.radios.na.channel) {
+        if (channelsOverlap5(r5.channel, r5.bw, neighborAP.radios.na.channel, neighborAP.radios.na && neighborAP.radios.na.bw)) neighborConflicts++;
       }
     });
   }
-
   return {
-    cu: maxCu,
-    cci: totalCci,
-    retry: maxRetry,
-    clients,
-    neighborConflicts,
-    total: Math.round(
-      maxCu * WEIGHTS.cuUtil +
-      totalCci * WEIGHTS.cci +
-      maxRetry * WEIGHTS.retry +
-      neighborConflicts * WEIGHTS.neighborConflict +
-      clients * WEIGHTS.clientCount
-    )
+    cu: maxCu, cci: totalCci, retry: maxRetry, clients, neighborConflicts,
+    total: Math.round(maxCu * WEIGHTS.cuUtil + totalCci * WEIGHTS.cci + maxRetry * WEIGHTS.retry + neighborConflicts * WEIGHTS.neighborConflict + clients * WEIGHTS.clientCount)
   };
 }
 
-// ── Joint Channel Combo Scoring ──────────────────────────────────────────────
-
-/**
- * Score a (ch24, ch5) combo for a given AP in the current virtual state.
- * Lower score = better.
- *
- * @param {Object} ap - AP being scored
- * @param {number|null} ch24 - Candidate 2.4GHz channel
- * @param {number|null} ch5 - Candidate 5GHz channel
- * @param {Object} vLoad24 - Virtual 2.4GHz load map
- * @param {Object} vLoad5 - Virtual 5GHz load map
- * @param {Object} proximityGraph - Proximity graph
- * @param {Object} floorAssignments - Floor-based channel assignment tracker
- * @param {Array} allAPs - Full AP list for neighbor lookups (passed explicitly)
- */
 function scoreCombo(ap, ch24, ch5, vLoad24, vLoad5, proximityGraph, floorAssignments, allAPs) {
   let score = 0;
   const r24 = ap.radios && ap.radios.ng;
   const r5 = ap.radios && ap.radios.na;
   const graphEntry = proximityGraph && proximityGraph[ap.mac];
   const floor = graphEntry ? graphEntry.floor : inferFloor(ap.name, 0);
-
-  // 1. Virtual load penalty: prefer channels with fewer APs
   const maxLoad24 = Math.max(1, ...Object.values(vLoad24));
   const maxLoad5 = Math.max(1, ...Object.values(vLoad5));
   score += ((vLoad24[ch24] || 0) / maxLoad24) * COMBO_PENALTIES.loadImbalance;
   score += ((vLoad5[ch5] || 0) / maxLoad5) * COMBO_PENALTIES.loadImbalance;
-
-  // 2. Neighbor conflict penalty: check against all neighbors' (potentially updated) channels
   if (graphEntry) {
     graphEntry.neighbors.forEach(nMac => {
       const neighbor = allAPs.find(a => a.mac === nMac);
       if (!neighbor) return;
-
       const n24 = neighbor.radios && neighbor.radios.ng;
       const n5 = neighbor.radios && neighbor.radios.na;
-
       if (n24 && n24._optCh24 !== undefined) {
         if (channelsOverlap24(ch24, n24._optCh24)) score += COMBO_PENALTIES.ngOverlap;
       } else if (n24 && n24.channel) {
         if (channelsOverlap24(ch24, n24.channel)) score += COMBO_PENALTIES.ngOverlap;
       }
-
       if (n5 && n5._optCh5 !== undefined) {
-        if (channelsOverlap5(ch5, r5 && r5.bw, n5._optCh5, n5.bw))
-          score += COMBO_PENALTIES.naOverlap;
+        if (channelsOverlap5(ch5, r5 && r5.bw, n5._optCh5, n5.bw)) score += COMBO_PENALTIES.naOverlap;
       } else if (n5 && n5.channel) {
-        if (channelsOverlap5(ch5, r5 && r5.bw, n5.channel, n5.bw))
-          score += COMBO_PENALTIES.naOverlap;
+        if (channelsOverlap5(ch5, r5 && r5.bw, n5.channel, n5.bw)) score += COMBO_PENALTIES.naOverlap;
       }
     });
   }
-
-  // 3. Floor-based separation: prefer different channels on different floors
   const floorKey24 = `${floor}_24_${ch24}`;
   const floorKey5 = `${floor}_5_${ch5}`;
   score += (floorAssignments[floorKey24] || 0) * COMBO_PENALTIES.sameFloorSameCh;
   score += (floorAssignments[floorKey5] || 0) * COMBO_PENALTIES.sameFloorSameCh;
-
-  // 4. Stability bonus: prefer keeping current channels
   if (r24 && r24.channel === ch24) score -= COMBO_PENALTIES.changeCost;
   if (r5 && r5.channel === ch5) score -= COMBO_PENALTIES.changeCost;
-
   return score;
 }
 
-// ── Main Optimizer ───────────────────────────────────────────────────────────
+// ── Inline essential evaluator (no module references) ────────────────────────
 
 /**
- * Run the constrained AP-level joint-band batch optimizer.
+ * Compute a global "pain" score for a complete channel assignment.
+ * Lower = better. Used by the GA as the fitness function.
  *
- * @param {Array} radios - Array of radio objects from analyzer.analyzeChannels()
- * @param {Object} channelSummary - Channel summary from analyzer
- * @param {Array} aps - Array of AP model objects (from buildApsModel), each with .radios.ng/.na
- * @param {Object} options
- * @param {number} [options.maxChanges=8] - Max APs to suggest changes for
- * @param {number} [options.minImprovementThreshold=5] - Min % improvement to include
- * @returns {Object} { plan, improvementReport, batchSummary }
+ * @param {Array} radios - Radio objects with their baseline cu_total, cci_count, etc.
+ * @param {Object} assignment - Map[apMac_radio] → channel number
+ * @param {Object} channelSummary - Current channel counts for computing before/after deltas
+ * @param {number} maxChanges - Budget of APs we are allowed to change
+ * @returns {{ pain: number, improvementPct: number, metrics: Object }}
  */
+function evaluateAssignment(radios, assignment, channelSummary, maxChanges) {
+  // Count changes
+  let changes = 0;
+  const changedMacs = new Set();
+
+  // Build final channel counts from the assignment
+  const finalCh24 = {};
+  const finalCh5 = {};
+
+  radios.forEach(r => {
+    const key = `${r.apMac}_${r.radio}`;
+    const assignedCh = assignment[key];
+    const finalCh = assignedCh != null ? assignedCh : r.channel;
+    const is24 = r.band === '2.4GHz' || r.radio === 'ng';
+    const target = is24 ? finalCh24 : finalCh5;
+    target[String(finalCh)] = (target[String(finalCh)] || 0) + 1;
+
+    if (assignedCh != null && Number(assignedCh) !== Number(r.channel)) {
+      changes++;
+      changedMacs.add(r.apMac);
+    }
+  });
+
+  const distinctAPsChanged = changedMacs.size;
+
+  // Compute CCI per radio and estimate CU improvement
+  let sumCu24 = 0, count24 = 0, maxCu24 = 0;
+  let sumCu5 = 0, count5 = 0, maxCu5 = 0;
+  let totalCci = 0;
+  let congested = 0;
+  let warning = 0;
+
+  radios.forEach(r => {
+    const key = `${r.apMac}_${r.radio}`;
+    const assignedCh = assignment[key];
+    const finalCh = assignedCh != null ? assignedCh : r.channel;
+    const is24 = r.band === '2.4GHz' || r.radio === 'ng';
+    const chCounts = is24 ? finalCh24 : finalCh5;
+    const finalChLoad = chCounts[String(finalCh)] || 0;
+    const newCci = Math.max(0, finalChLoad - 1);
+    const cciReduction = (r.cci_count || 0) - newCci;
+    const baseline = Math.max((r.cu_self_rx || 0) + (r.cu_self_tx || 0), 8);
+    const estCu = Math.max(baseline, Math.min(100, (r.cu_total || baseline) - cciReduction * CU_REDUCTION_PER_CCI));
+
+    if (is24) {
+      sumCu24 += estCu; count24++;
+      if (estCu > maxCu24) maxCu24 = estCu;
+    } else {
+      sumCu5 += estCu; count5++;
+      if (estCu > maxCu5) maxCu5 = estCu;
+    }
+    totalCci += newCci;
+    if (estCu > 75 || newCci > 12) congested++;
+    else if (estCu > 50 || newCci > 4) warning++;
+  });
+
+  // Channel balance (variance)
+  const vals24 = Object.values(finalCh24);
+  const vals5 = Object.values(finalCh5);
+  const avg24 = vals24.length ? vals24.reduce((a, b) => a + b, 0) / vals24.length : 0;
+  const avg5 = vals5.length ? vals5.reduce((a, b) => a + b, 0) / vals5.length : 0;
+  const var24 = vals24.length ? vals24.reduce((s, v) => s + (v - avg24) ** 2, 0) / vals24.length : 0;
+  const var5 = vals5.length ? vals5.reduce((s, v) => s + (v - avg5) ** 2, 0) / vals5.length : 0;
+
+  // Compute improvement vs current
+  const befCh24 = channelSummary.channelCounts24 || {};
+  const befCh5 = channelSummary.channelCounts5 || {};
+  // Estimate current total CCI from current channel counts
+  const curTotalCci = radios.reduce((sum, r) => {
+    const is24 = r.band === '2.4GHz' || r.radio === 'ng';
+    const curLoad = (is24 ? befCh24 : befCh5)[String(r.channel)] || 0;
+    return sum + Math.max(0, curLoad - 1);
+  }, 0);
+
+  const avgCuBefore = Math.round(radios.reduce((s, r) => s + (r.cu_total || 0), 0) / (radios.length || 1));
+  const avgCuAfter = Math.round((sumCu24 + sumCu5) / Math.max(1, count24 + count5));
+  const improvementPct = avgCuBefore > 0
+    ? Math.round((avgCuBefore - avgCuAfter) / avgCuBefore * 100)
+    : 0;
+
+  // Composite pain score (lower = better)
+  const pain =
+    (avgCuAfter || 0) * 1.4 +
+    (totalCci || 0) * 2.2 +
+    (congested || 0) * 30 +
+    (warning || 0) * 10 +
+    distinctAPsChanged * 0.3 -
+    Math.max(0, improvementPct) * 8 +
+    (var24 + var5) * 0.5;
+
+  return {
+    pain,
+    improvementPct,
+    distinctAPsChanged,
+    metrics: {
+      avgCu24: Math.round(sumCu24 / (count24 || 1)),
+      maxCu24,
+      avgCu5: Math.round(sumCu5 / (count5 || 1)),
+      maxCu5,
+      totalCci,
+      congested,
+      warning,
+      chVar24: Math.round(var24 * 10) / 10,
+      chVar5: Math.round(var5 * 10) / 10,
+    }
+  };
+}
+
+// ── GA-specific helpers ──────────────────────────────────────────────────────
+
+function randomValidChannel(is24) {
+  const pool = is24 ? CHANNELS_24 : CHANNELS_5;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+function createRandomAssignment(radios) {
+  const assignment = {};
+  radios.forEach(r => {
+    const key = `${r.apMac}_${r.radio}`;
+    const is24 = r.band === '2.4GHz' || r.radio === 'ng';
+    // 70% chance to change, 30% stay current (biases toward stability)
+    // Actually for the GA we want diversity — both changed and unchanged solutions
+    if (Math.random() < 0.85) {
+      assignment[key] = randomValidChannel(is24);
+    }
+    // else leave undefined = keep current
+  });
+  return assignment;
+}
+
+function crossoverAssignments(assignmentA, assignmentB) {
+  const child = {};
+  const allKeys = new Set([...Object.keys(assignmentA), ...Object.keys(assignmentB)]);
+  allKeys.forEach(key => {
+    const a = assignmentA[key];
+    const b = assignmentB[key];
+    if (a !== undefined && b !== undefined) {
+      // Uniform crossover — pick randomly from either parent
+      child[key] = Math.random() < 0.5 ? a : b;
+    } else if (a !== undefined) {
+      child[key] = Math.random() < 0.9 ? a : undefined;
+    } else if (b !== undefined) {
+      child[key] = Math.random() < 0.9 ? b : undefined;
+    }
+  });
+  return child;
+}
+
+function mutateAssignment(assignment, radios, mutationRate) {
+  const result = { ...assignment };
+  radios.forEach(r => {
+    const key = `${r.apMac}_${r.radio}`;
+    if (Math.random() < mutationRate) {
+      const is24 = r.band === '2.4GHz' || r.radio === 'ng';
+      result[key] = randomValidChannel(is24);
+    }
+  });
+  return result;
+}
+
+function tournamentSelect(population, fitnessScores, tournamentSize) {
+  let best = -1;
+  let bestFitness = Infinity;
+  for (let i = 0; i < tournamentSize; i++) {
+    const idx = Math.floor(Math.random() * population.length);
+    if (fitnessScores[idx] < bestFitness) {
+      best = idx;
+      bestFitness = fitnessScores[idx];
+    }
+  }
+  return best;
+}
+
+function clampInt(n, min, max, fallback) {
+  if (!Number.isFinite(n)) return fallback;
+  const v = Math.trunc(n);
+  if (v < min) return min;
+  if (v > max) return max;
+  return v;
+}
+
+// ── Build the final result from a GA-found assignment ────────────────────────
+
+function assignmentToResult(assignment, radios, channelSummary, aps, allAPs, proximityGraph, maxChanges, evaluation) {
+  // Build plan and changedAPs in the same format as runConstrainedOptimizerSingle
+  const plan = {};
+  const changedAPs = [];
+  const apMap = {};
+
+  radios.forEach((r) => {
+    if (!apMap[r.apMac]) {
+      apMap[r.apMac] = { mac: r.apMac, name: r.apName, floor: inferFloor(r.apName, 0) };
+    }
+  });
+
+  // Attach floor from aps
+  allAPs.forEach(ap => {
+    if (apMap[ap.mac] && ap.floor) apMap[ap.mac].floor = ap.floor;
+  });
+
+  radios.forEach(r => {
+    const key = `${r.apMac}_${r.radio}`;
+    const assignedCh = assignment[key];
+    if (assignedCh === undefined) return; // not changed
+
+    if (Number(assignedCh) === Number(r.channel)) return; // no change needed
+
+    plan[key] = {
+      suggestedChannel: assignedCh,
+      changeNeeded: true,
+      impact: Math.round(evaluation.metrics.avgCu24 + evaluation.metrics.avgCu5 / 2) || 1,
+    };
+
+    // Track unique AP changes
+    if (!changedAPs.find(c => c.mac === r.apMac)) {
+      const r24 = r.radio === 'ng' ? r : null;
+      const r5 = r.radio === 'na' ? r : null;
+      changedAPs.push({
+        mac: r.apMac,
+        name: r.apName,
+        floor: apMap[r.apMac] ? apMap[r.apMac].floor : inferFloor(r.apName, 0),
+        healthScore: Math.round(evaluation.pain),
+        changes: `${r.radio === 'ng' ? '2.4G' : '5G'}: ${r.channel}→${assignedCh}`,
+        oldNgCh: r24 ? r.channel : null,
+        newNgCh: r24 ? assignedCh : null,
+        oldNaCh: r5 ? r.channel : null,
+        newNaCh: r5 ? assignedCh : null,
+        cu: r.cu_total || 0,
+        cci: r.cci_count || 0,
+      });
+    }
+  });
+
+  // Build before metrics
+  let befSumCu24 = 0, befCount24 = 0, befMaxCu24 = 0;
+  let befSumCu5 = 0, befCount5 = 0, befMaxCu5 = 0;
+  let befTotalCci = 0, befCongested = 0, befWarning = 0;
+  radios.forEach(r => {
+    const cu = r.cu_total || 0;
+    const cci = r.cci_count || 0;
+    const is24 = r.band === '2.4GHz' || r.radio === 'ng';
+    if (is24) { befSumCu24 += cu; befCount24++; if (cu > befMaxCu24) befMaxCu24 = cu; }
+    else { befSumCu5 += cu; befCount5++; if (cu > befMaxCu5) befMaxCu5 = cu; }
+    befTotalCci += cci;
+    if (cu > 75 || cci > 12) befCongested++;
+    else if (cu > 50 || cci > 4) befWarning++;
+  });
+
+  const m = evaluation.metrics;
+  const beforeMetrics = {
+    avgCu24: Math.round(befSumCu24 / (befCount24 || 1)),
+    maxCu24: befMaxCu24,
+    avgCu5: Math.round(befSumCu5 / (befCount5 || 1)),
+    maxCu5: befMaxCu5,
+    totalCci: befTotalCci,
+    congestedCount: befCongested,
+    warningCount: befWarning,
+    channelCounts24: (channelSummary.channelCounts24 || {}),
+    channelCounts5: (channelSummary.channelCounts5 || {}),
+  };
+
+  const afterMetrics = {
+    avgCu24: m.avgCu24,
+    maxCu24: m.maxCu24,
+    avgCu5: m.avgCu5,
+    maxCu5: m.maxCu5,
+    totalCci: m.totalCci,
+    congestedCount: m.congested,
+    warningCount: m.warning,
+  };
+
+  const improvementReport = {
+    before: beforeMetrics,
+    after: afterMetrics,
+    deltas: {
+      avgCu24Delta: beforeMetrics.avgCu24 - m.avgCu24,
+      avgCu5Delta: beforeMetrics.avgCu5 - m.avgCu5,
+      maxCu24Delta: beforeMetrics.maxCu24 - m.maxCu24,
+      maxCu5Delta: beforeMetrics.maxCu5 - m.maxCu5,
+      cciReduction: befTotalCci - m.totalCci,
+      congestedReduction: befCongested - m.congested,
+    },
+    estimatedImprovementPct: Math.max(0, evaluation.improvementPct),
+  };
+
+  return {
+    plan,
+    changedAPs,
+    totalAPs: Object.keys(apMap).length,
+    candidatesConsidered: changedAPs.length,
+    batchSummary: {
+      maxChanges,
+      changesSuggested: changedAPs.length,
+      remainingWorstAPs: Math.max(0, Object.keys(apMap).length - changedAPs.length),
+      recommendation: changedAPs.length > 0
+        ? `GA found ${changedAPs.length} changes to improve network. Apply, then re-scan and re-run.`
+        : 'GA found no beneficial changes. Your network may be well-configured.',
+    },
+    improvementReport,
+    proximityGraph,
+  };
+}
+
+// ── Legacy single-pass optimizer (unchanged, used for heuristic mode + exports) ──
+
 function runConstrainedOptimizerSingle(radios, channelSummary, aps, options = {}) {
   const maxChanges = options.maxChanges ?? DEFAULT_MAX_CHANGES;
   const minImprovementThreshold = options.minImprovementThreshold ?? MIN_IMPROVEMENT_THRESHOLD;
   const comboJitter = Number.isFinite(Number(options.comboJitter)) ? Number(options.comboJitter) : 0;
 
-  // FIX 5: No module-level global — allAPs passed explicitly through every function
   const allAPs = Array.isArray(aps) ? aps : [];
-
-  // Build proximity graph
   const proximityGraph = buildProximityGraph(allAPs);
 
-  // Group radios by AP and compute health scores
   const apMap = {};
   radios.forEach((r, idx) => {
     if (!apMap[r.apMac]) {
-      apMap[r.apMac] = {
-        mac: r.apMac,
-        name: r.apName,
-        ip: r.ip,
-        model: r.model,
-        radios: {},
-        floor: inferFloor(r.apName, idx),
-      };
+      apMap[r.apMac] = { mac: r.apMac, name: r.apName, ip: r.ip, model: r.model, radios: {}, floor: inferFloor(r.apName, idx) };
     }
     apMap[r.apMac].radios[r.radio] = r;
   });
-
-  // Attach floor info from aps if available
   allAPs.forEach(ap => {
     const entry = apMap[ap.mac];
     if (entry && ap.floor) entry.floor = ap.floor;
   });
 
-  // Score each AP — passes allAPs explicitly (no global)
-  const apList = Object.values(apMap).map(ap => {
-    const scores = scoreAP(ap, proximityGraph, allAPs);
-    return { ...ap, ...scores };
-  });
-
-  // Sort by health score descending (worst first)
+  const apList = Object.values(apMap).map(ap => ({ ...ap, ...scoreAP(ap, proximityGraph, allAPs) }));
   apList.sort((a, b) => b.total - a.total);
-
-  // Select top N APs for optimization
   const candidates = apList.slice(0, maxChanges);
 
-  // Compute BEFORE metrics inline from radios (cci_count, cu_total already set by analyzer)
   let befSumCu24 = 0, befCount24 = 0, befMaxCu24 = 0;
   let befSumCu5 = 0, befCount5 = 0, befMaxCu5 = 0;
-  let befTotalCci = 0;
-  let befCongested = 0;
-  let befWarning = 0;
-
+  let befTotalCci = 0, befCongested = 0, befWarning = 0;
   radios.forEach(r => {
-    const cu = r.cu_total || 0;
-    const cci = r.cci_count || 0;
-    if (r.band === '2.4GHz' || r.radio === 'ng') {
-      befSumCu24 += cu; befCount24++; if (cu > befMaxCu24) befMaxCu24 = cu;
-    } else {
-      befSumCu5 += cu; befCount5++; if (cu > befMaxCu5) befMaxCu5 = cu;
-    }
+    const cu = r.cu_total || 0, cci = r.cci_count || 0;
+    const is24 = r.band === '2.4GHz' || r.radio === 'ng';
+    if (is24) { befSumCu24 += cu; befCount24++; if (cu > befMaxCu24) befMaxCu24 = cu; }
+    else { befSumCu5 += cu; befCount5++; if (cu > befMaxCu5) befMaxCu5 = cu; }
     befTotalCci += cci;
     if (cu > 75 || cci > 12) befCongested++;
     else if (cu > 50 || cci > 4) befWarning++;
@@ -354,73 +544,46 @@ function runConstrainedOptimizerSingle(radios, channelSummary, aps, options = {}
   const befVar5 = befVals5.length ? befVals5.reduce((s, v) => s + (v - befAvg5) ** 2, 0) / befVals5.length : 0;
 
   const beforeMetrics = {
-    avgCu24: Math.round(befSumCu24 / (befCount24 || 1)),
-    maxCu24: befMaxCu24,
-    avgCu5: Math.round(befSumCu5 / (befCount5 || 1)),
-    maxCu5: befMaxCu5,
-    totalCci: befTotalCci,
-    congestedCount: befCongested,
-    warningCount: befWarning,
-    chVar24: Math.round(befVar24 * 10) / 10,
-    chVar5: Math.round(befVar5 * 10) / 10,
-    channelCounts24: befChCounts24,
-    channelCounts5: befChCounts5,
+    avgCu24: Math.round(befSumCu24 / (befCount24 || 1)), maxCu24: befMaxCu24,
+    avgCu5: Math.round(befSumCu5 / (befCount5 || 1)), maxCu5: befMaxCu5,
+    totalCci: befTotalCci, congestedCount: befCongested, warningCount: befWarning,
+    chVar24: Math.round(befVar24 * 10) / 10, chVar5: Math.round(befVar5 * 10) / 10,
+    channelCounts24: befChCounts24, channelCounts5: befChCounts5,
   };
 
-  // Initialize virtual load maps from current channel counts
   const vLoad24 = Object.assign({}, channelSummary.channelCounts24 || {});
   const vLoad5 = Object.assign({}, channelSummary.channelCounts5 || {});
   const floorAssignments = {};
-
-  // Run joint optimization for each candidate AP
   const plan = {};
   const changedAPs = [];
 
   candidates.forEach(ap => {
-    const r24 = ap.radios.ng;
-    const r5 = ap.radios.na;
-
+    const r24 = ap.radios.ng, r5 = ap.radios.na;
     if (!r24 && !r5) return;
-
     const valid24 = r24 ? CHANNELS_24 : [null];
     const valid5 = r5 ? CHANNELS_5 : [null];
+    let bestCombo = null, bestScore = Infinity;
 
-    let bestCombo = null;
-    let bestScore = Infinity;
-
-    // Enumerate all (ch24, ch5) combinations
     valid24.forEach(ch24 => {
       valid5.forEach(ch5 => {
-        // FIX 5: passes allAPs explicitly
         let score = scoreCombo(ap, ch24, ch5, vLoad24, vLoad5, proximityGraph, floorAssignments, allAPs);
-        if (comboJitter > 0) {
-          score += (Math.random() - 0.5) * comboJitter;
-        }
-        if (score < bestScore) {
-          bestScore = score;
-          bestCombo = { ch24, ch5 };
-        }
+        if (comboJitter > 0) score += (Math.random() - 0.5) * comboJitter;
+        if (score < bestScore) { bestScore = score; bestCombo = { ch24, ch5 }; }
       });
     });
 
     if (!bestCombo) return;
-
     const { ch24, ch5 } = bestCombo;
     const needsNgChange = r24 && ch24 !== null && r24.channel !== ch24;
     const needsNaChange = r5 && ch5 !== null && r5.channel !== ch5;
-
-    // Guard: don't change healthy APs with minimal interference
     const maxCu = Math.max(r24 ? r24.cu_total || 0 : 0, r5 ? r5.cu_total || 0 : 0);
     const totalCci = (r24 ? r24.cci_count || 0 : 0) + (r5 ? r5.cci_count || 0 : 0);
     const currentCh24Load = r24 ? (vLoad24[r24.channel] || 0) : 0;
     const currentCh5Load = r5 ? (vLoad5[r5.channel] || 0) : 0;
 
-    if (totalCci === 0 && maxCu < 50 && currentCh24Load <= 1 && currentCh5Load <= 1) {
-      return;
-    }
+    if (totalCci === 0 && maxCu < 50 && currentCh24Load <= 1 && currentCh5Load <= 1) return;
 
     if (needsNgChange || needsNaChange) {
-      // Update virtual load map (butterfly effect for subsequent APs)
       if (r24 && ch24 !== null && r24.channel !== ch24) {
         vLoad24[r24.channel] = Math.max(0, (vLoad24[r24.channel] || 0) - 1);
         vLoad24[ch24] = (vLoad24[ch24] || 0) + 1;
@@ -429,71 +592,41 @@ function runConstrainedOptimizerSingle(radios, channelSummary, aps, options = {}
         vLoad5[r5.channel] = Math.max(0, (vLoad5[r5.channel] || 0) - 1);
         vLoad5[ch5] = (vLoad5[ch5] || 0) + 1;
       }
-
-      // Track floor assignments
-      if (ch24 !== null)
-        floorAssignments[`${ap.floor}_24_${ch24}`] = (floorAssignments[`${ap.floor}_24_${ch24}`] || 0) + 1;
-      if (ch5 !== null)
-        floorAssignments[`${ap.floor}_5_${ch5}`] = (floorAssignments[`${ap.floor}_5_${ch5}`] || 0) + 1;
-
-      // Mark optimized channels on the radio objects so neighbors see them
+      if (ch24 !== null) floorAssignments[`${ap.floor}_24_${ch24}`] = (floorAssignments[`${ap.floor}_24_${ch24}`] || 0) + 1;
+      if (ch5 !== null) floorAssignments[`${ap.floor}_5_${ch5}`] = (floorAssignments[`${ap.floor}_5_${ch5}`] || 0) + 1;
       if (r24) r24._optCh24 = ch24 !== null ? ch24 : r24.channel;
       if (r5) r5._optCh5 = ch5 !== null ? ch5 : r5.channel;
 
-      // Build change description
       const changes = [];
       if (needsNgChange) changes.push(`2.4G: ${r24.channel}→${ch24}`);
       if (needsNaChange) changes.push(`5G: ${r5.channel}→${ch5}`);
 
       changedAPs.push({
-        mac: ap.mac,
-        name: ap.name,
-        floor: ap.floor,
-        healthScore: ap.total,
+        mac: ap.mac, name: ap.name, floor: ap.floor, healthScore: ap.total,
         changes: changes.join(', '),
-        oldNgCh: r24 ? r24.channel : null,
-        newNgCh: needsNgChange ? ch24 : null,
-        oldNaCh: r5 ? r5.channel : null,
-        newNaCh: needsNaChange ? ch5 : null,
-        cu: ap.cu,
-        cci: ap.cci,
+        oldNgCh: r24 ? r24.channel : null, newNgCh: needsNgChange ? ch24 : null,
+        oldNaCh: r5 ? r5.channel : null, newNaCh: needsNaChange ? ch5 : null,
+        cu: ap.cu, cci: ap.cci,
       });
 
-      // Store plan entries (per-radio, same format as old optimizer for compat)
-      if (r24) {
-        plan[`${ap.mac}_${r24.radio}`] = {
-          suggestedChannel: ch24 !== null ? ch24 : r24.channel,
-          changeNeeded: needsNgChange,
-          impact: ap.total,
-        };
-      }
-      if (r5) {
-        plan[`${ap.mac}_${r5.radio}`] = {
-          suggestedChannel: ch5 !== null ? ch5 : r5.channel,
-          changeNeeded: needsNaChange,
-          impact: ap.total,
-        };
-      }
+      if (r24) plan[`${ap.mac}_${r24.radio}`] = { suggestedChannel: ch24 !== null ? ch24 : r24.channel, changeNeeded: needsNgChange, impact: ap.total };
+      if (r5) plan[`${ap.mac}_${r5.radio}`] = { suggestedChannel: ch5 !== null ? ch5 : r5.channel, changeNeeded: needsNaChange, impact: ap.total };
     }
   });
 
-  // Compute AFTER metrics (full recomputation from final channel distribution)
-  const finalChCounts24 = {};
-  const finalChCounts5 = {};
+  // Compute after metrics (same as original)
+  const finalChCounts24 = {}, finalChCounts5 = {};
   radios.forEach(r => {
     const key = `${r.apMac}_${r.radio}`;
     const opt = plan[key];
     const finalCh = (opt && opt.changeNeeded) ? opt.suggestedChannel : r.channel;
-    const is24 = r.band === '2.4GHz' || r.radio === 'ng';
-    const target = is24 ? finalChCounts24 : finalChCounts5;
+    const target = (r.band === '2.4GHz' || r.radio === 'ng') ? finalChCounts24 : finalChCounts5;
     target[String(finalCh)] = (target[String(finalCh)] || 0) + 1;
   });
 
   let aftSumCu24 = 0, aftCount24 = 0, aftMaxCu24 = 0;
   let aftSumCu5 = 0, aftCount5 = 0, aftMaxCu5 = 0;
-  let aftTotalCci = 0;
-  let aftCongested = 0;
-  let aftWarning = 0;
+  let aftTotalCci = 0, aftCongested = 0, aftWarning = 0;
 
   radios.forEach(r => {
     const key = `${r.apMac}_${r.radio}`;
@@ -503,50 +636,32 @@ function runConstrainedOptimizerSingle(radios, channelSummary, aps, options = {}
     const finalChLoad = (is24 ? finalChCounts24 : finalChCounts5)[String(finalCh)] || 0;
     const newCci = Math.max(0, finalChLoad - 1);
     const cciReduction = (r.cci_count || 0) - newCci;
-
     const baseline = Math.max((r.cu_self_rx || 0) + (r.cu_self_tx || 0), 8);
-    const estCu = Math.max(baseline, Math.min(100,
-      (r.cu_total || baseline) - cciReduction * CU_REDUCTION_PER_CCI
-    ));
+    const estCu = Math.max(baseline, Math.min(100, (r.cu_total || baseline) - cciReduction * CU_REDUCTION_PER_CCI));
 
-    if (is24) {
-      aftSumCu24 += estCu;
-      aftCount24++;
-      if (estCu > aftMaxCu24) aftMaxCu24 = estCu;
-    } else {
-      aftSumCu5 += estCu;
-      aftCount5++;
-      if (estCu > aftMaxCu5) aftMaxCu5 = estCu;
-    }
+    if (is24) { aftSumCu24 += estCu; aftCount24++; if (estCu > aftMaxCu24) aftMaxCu24 = estCu; }
+    else { aftSumCu5 += estCu; aftCount5++; if (estCu > aftMaxCu5) aftMaxCu5 = estCu; }
     aftTotalCci += newCci;
     if (estCu > 75 || newCci > 12) aftCongested++;
     else if (estCu > 50 || newCci > 4) aftWarning++;
   });
 
-  const aftVals24 = Object.values(finalChCounts24);
-  const aftVals5 = Object.values(finalChCounts5);
+  const aftVals24 = Object.values(finalChCounts24), aftVals5 = Object.values(finalChCounts5);
   const aftAvg24 = aftVals24.length ? aftVals24.reduce((a, b) => a + b, 0) / aftVals24.length : 0;
   const aftAvg5 = aftVals5.length ? aftVals5.reduce((a, b) => a + b, 0) / aftVals5.length : 0;
   const aftVar24 = aftVals24.length ? aftVals24.reduce((s, v) => s + (v - aftAvg24) ** 2, 0) / aftVals24.length : 0;
   const aftVar5 = aftVals5.length ? aftVals5.reduce((s, v) => s + (v - aftAvg5) ** 2, 0) / aftVals5.length : 0;
 
   const afterMetrics = {
-    avgCu24: Math.round(aftSumCu24 / (aftCount24 || 1)),
-    maxCu24: aftMaxCu24,
-    avgCu5: Math.round(aftSumCu5 / (aftCount5 || 1)),
-    maxCu5: aftMaxCu5,
-    totalCci: aftTotalCci,
-    congestedCount: aftCongested,
-    warningCount: aftWarning,
-    chVar24: Math.round(aftVar24 * 10) / 10,
-    chVar5: Math.round(aftVar5 * 10) / 10,
-    channelCounts24: finalChCounts24,
-    channelCounts5: finalChCounts5,
+    avgCu24: Math.round(aftSumCu24 / (aftCount24 || 1)), maxCu24: aftMaxCu24,
+    avgCu5: Math.round(aftSumCu5 / (aftCount5 || 1)), maxCu5: aftMaxCu5,
+    totalCci: aftTotalCci, congestedCount: aftCongested, warningCount: aftWarning,
+    chVar24: Math.round(aftVar24 * 10) / 10, chVar5: Math.round(aftVar5 * 10) / 10,
+    channelCounts24: finalChCounts24, channelCounts5: finalChCounts5,
   };
 
   const improvementReport = {
-    before: beforeMetrics,
-    after: afterMetrics,
+    before: beforeMetrics, after: afterMetrics,
     deltas: {
       avgCu24Delta: beforeMetrics.avgCu24 - afterMetrics.avgCu24,
       avgCu5Delta: beforeMetrics.avgCu5 - afterMetrics.avgCu5,
@@ -558,136 +673,256 @@ function runConstrainedOptimizerSingle(radios, channelSummary, aps, options = {}
       chVar5Delta: Math.round((beforeMetrics.chVar5 - afterMetrics.chVar5) * 10) / 10,
     },
     estimatedImprovementPct: Math.round(
-      ((beforeMetrics.avgCu24 + beforeMetrics.avgCu5) -
-       (afterMetrics.avgCu24 + afterMetrics.avgCu5)) /
+      ((beforeMetrics.avgCu24 + beforeMetrics.avgCu5) - (afterMetrics.avgCu24 + afterMetrics.avgCu5)) /
       Math.max(1, (beforeMetrics.avgCu24 + beforeMetrics.avgCu5)) * 100
     ),
   };
 
   const result = {
-    plan,
-    changedAPs,
-    totalAPs: apList.length,
-    candidatesConsidered: candidates.length,
+    plan, changedAPs, totalAPs: apList.length, candidatesConsidered: candidates.length,
     batchSummary: {
-      maxChanges,
-      changesSuggested: changedAPs.length,
+      maxChanges, changesSuggested: changedAPs.length,
       remainingWorstAPs: Math.max(0, apList.length - changedAPs.length),
       recommendation: changedAPs.length > 0
-        ? `Apply these ${changedAPs.length} changes, then re-scan and run optimizer again to pick the next batch.`
-        : 'No beneficial changes found within the current budget. All APs are optimally configured.',
+        ? `Apply these ${changedAPs.length} changes, then re-scan and run optimizer again.`
+        : 'No beneficial changes found within the current budget.',
     },
-    improvementReport,
-    proximityGraph,
+    improvementReport, proximityGraph,
   };
 
-  // Optional quality floor: if predicted gain is below threshold, do not suggest
-  // changes for this round to avoid noisy low-impact recommendations.
   if (options.enforceMinImprovement === true && result.improvementReport.estimatedImprovementPct < minImprovementThreshold) {
     result.plan = {};
     result.changedAPs = [];
     result.batchSummary.changesSuggested = 0;
-    result.batchSummary.recommendation =
-      `No beneficial changes found above ${minImprovementThreshold}% predicted improvement.`;
+    result.batchSummary.recommendation = `No beneficial changes found above ${minImprovementThreshold}% predicted improvement.`;
   }
 
   return result;
 }
 
-function computePlanObjective(result) {
-  const after = (result.improvementReport && result.improvementReport.after) || {};
-  const estImprovement = (result.improvementReport && result.improvementReport.estimatedImprovementPct) || 0;
-
-  // Lower score is better.
-  let score = 0;
-  score += (after.avgCu24 || 0) * 1.4;
-  score += (after.avgCu5 || 0) * 1.4;
-  score += (after.totalCci || 0) * 2.2;
-  score += (after.congestedCount || 0) * 30;
-  score += (after.warningCount || 0) * 10;
-  score += (result.changedAPs ? result.changedAPs.length : 0) * 0.5;
-  score -= estImprovement * 8;
-  if (estImprovement < 0) score += Math.abs(estImprovement) * 20;
-  return score;
-}
-
-function clampInt(n, min, max, fallback) {
-  if (!Number.isFinite(n)) return fallback;
-  const v = Math.trunc(n);
-  if (v < min) return min;
-  if (v > max) return max;
-  return v;
-}
+// ── GA-based global optimizer (async, with progress callbacks) ───────────────
 
 /**
- * Public optimizer entrypoint.
+ * Run a full Genetic Algorithm search over the complete channel assignment space.
  *
- * Modes:
- * - heuristic (default): one fast deterministic pass
- * - generational: iterative multi-start search over 2-3 minutes (configurable)
+ * @param {Array} radios - Radio objects from analyzer
+ * @param {Object} channelSummary - Current channel distribution
+ * @param {Array} aps - AP model objects
+ * @param {Object} options
+ * @param {number} options.maxChanges - Budget (passed through to result format)
+ * @param {number} options.timeBudgetMs - Maximum search time (default 150000)
+ * @param {number} options.populationSize - GA population size (default 40)
+ * @param {Function} [onProgress] - Called periodically: (progressObject) => void
+ * @returns {Promise<Object>} Result in the same format as runConstrainedOptimizerSingle
  */
-function runConstrainedOptimizer(radios, channelSummary, aps, options = {}) {
-  const mode = String(options.searchMode || 'heuristic').toLowerCase();
+async function runGeneticOptimizer(radios, channelSummary, aps, options = {}, onProgress) {
+  const maxChanges = options.maxChanges ?? DEFAULT_MAX_CHANGES;
+  const timeBudgetMs = clampInt(Number(options.timeBudgetMs), 1000, 300000, 150000);
+  const populationSize = clampInt(Number(options.populationSize), 10, 200, GA_POPULATION_SIZE);
+  const mutationRate = Number(options.mutationRate) || GA_MUTATION_RATE;
+  const eliteCount = Math.min(clampInt(Number(options.eliteCount), 1, 50, GA_ELITE_COUNT), Math.floor(populationSize / 4));
+  const stagnationLimit = clampInt(Number(options.stagnationLimit), 10, 5000, GA_STAGNATION_LIMIT);
 
-  // Fast default mode keeps existing behavior for exports and tests.
-  if (mode !== 'generational') {
-    const result = runConstrainedOptimizerSingle(radios, channelSummary, aps, options);
-    result.searchMeta = {
-      mode: 'heuristic',
-      generationsTried: 1,
-      durationMs: 0
-    };
-    return result;
+  const allAPs = Array.isArray(aps) ? aps : [];
+  const proximityGraph = buildProximityGraph(allAPs);
+  const started = Date.now();
+
+  // Helper to yield to event loop so SSE can flush
+  const yieldToLoop = () => new Promise(resolve => setImmediate(resolve));
+
+  // 1. Create initial population
+  let population = [];
+  let fitnessScores = [];
+
+  // Baseline: the heuristic solution (generation 0 baseline)
+  const heuristicResult = runConstrainedOptimizerSingle(radios, channelSummary, aps, { ...options, comboJitter: 0 });
+  const heuristicAssignment = {};
+
+  // Encode heuristic result as assignment
+  radios.forEach(r => {
+    const key = `${r.apMac}_${r.radio}`;
+    const opt = heuristicResult.plan[key];
+    if (opt && opt.changeNeeded) {
+      heuristicAssignment[key] = opt.suggestedChannel;
+    }
+  });
+
+  // Evaluate baseline
+  const heuristicEval = evaluateAssignment(radios, heuristicAssignment, channelSummary, maxChanges);
+
+  // Seed population with heuristic
+  population.push(heuristicAssignment);
+  fitnessScores.push(heuristicEval.pain);
+
+  // Fill rest with random individuals
+  for (let i = 1; i < populationSize; i++) {
+    const assignment = createRandomAssignment(radios);
+    const evalResult = evaluateAssignment(radios, assignment, channelSummary, maxChanges);
+    population.push(assignment);
+    fitnessScores.push(evalResult.pain);
   }
 
-  const timeBudgetMs = clampInt(Number(options.timeBudgetMs), 1000, 300000, 150000);
-  const generationLimit = clampInt(Number(options.generationLimit), 1, 200000, 20000);
-
-  const started = Date.now();
-  let generations = 0;
-
-  // Baseline deterministic solution (generation 0).
-  let best = runConstrainedOptimizerSingle(radios, channelSummary, aps, {
-    ...options,
-    comboJitter: 0
-  });
-  let bestScore = computePlanObjective(best);
+  let bestAssignment = heuristicAssignment;
+  let bestEval = heuristicEval;
   let bestGeneration = 0;
 
-  while ((Date.now() - started) < timeBudgetMs && generations < generationLimit) {
+  // Sort initial population
+  const sortedIndices = population.map((_, i) => i).sort((a, b) => fitnessScores[a] - fitnessScores[b]);
+  population = sortedIndices.map(i => population[i]);
+  fitnessScores = sortedIndices.map(i => fitnessScores[i]);
+
+  let generations = 0;
+  let stagnationCounter = 0;
+  let lastImprovementGen = 0;
+
+  // Report initial progress
+  const sendProgress = async (phase) => {
+    if (typeof onProgress !== 'function') return;
+    const elapsed = Date.now() - started;
+    const remaining = Math.max(0, timeBudgetMs - elapsed);
+    onProgress({
+      phase,
+      generation: generations,
+      populationSize: population.length,
+      elapsedMs: elapsed,
+      remainingMs: remaining,
+      totalBudgetMs: timeBudgetMs,
+      bestPain: Math.round(bestEval.pain * 100) / 100,
+      bestImprovementPct: bestEval.improvementPct,
+      bestChangesCount: bestEval.distinctAPsChanged,
+      bestGeneration,
+      stagnationCounter,
+      statusText: phase === 'searching'
+        ? `Exploring generation ${generations}... best pain ${Math.round(bestEval.pain * 100) / 100}`
+        : `${phase}`,
+    });
+    await yieldToLoop();
+  };
+
+  await sendProgress('initializing');
+
+  // 2. Evolve
+  let reportCounter = 0;
+  const REPORT_INTERVAL = Math.max(1, Math.round(populationSize * 0.5));
+
+  while ((Date.now() - started) < timeBudgetMs) {
     generations++;
 
-    // Increasing jitter cycle explores different local minima.
-    const jitter = 1.5 + (generations % 11) * 1.2;
-    const candidate = runConstrainedOptimizerSingle(radios, channelSummary, aps, {
-      ...options,
-      comboJitter: jitter
-    });
+    // Create next generation
+    const nextPopulation = [];
+    const nextFitnessScores = [];
 
-    const candScore = computePlanObjective(candidate);
-    const isBetter =
-      candScore < bestScore ||
-      (candScore === bestScore &&
-        candidate.improvementReport.estimatedImprovementPct > best.improvementReport.estimatedImprovementPct);
+    // Elitism: keep the best individuals
+    for (let i = 0; i < eliteCount && i < population.length; i++) {
+      nextPopulation.push(population[i]);
+      nextFitnessScores.push(fitnessScores[i]);
+    }
 
-    if (isBetter) {
-      best = candidate;
-      bestScore = candScore;
-      bestGeneration = generations;
+    // Fill rest via tournament selection + crossover + mutation
+    while (nextPopulation.length < populationSize) {
+      // Select parents
+      const p1Idx = tournamentSelect(population, fitnessScores, GA_TOURNAMENT_SIZE);
+      const p2Idx = tournamentSelect(population, fitnessScores, GA_TOURNAMENT_SIZE);
+
+      let child;
+      if (Math.random() < GA_CROSSOVER_RATE) {
+        child = crossoverAssignments(population[p1Idx], population[p2Idx]);
+      } else {
+        child = { ...population[p1Idx] };
+      }
+
+      // Mutation
+      child = mutateAssignment(child, radios, mutationRate);
+
+      const evalResult = evaluateAssignment(radios, child, channelSummary, maxChanges);
+      nextPopulation.push(child);
+      nextFitnessScores.push(evalResult.pain);
+
+      // Track best
+      if (evalResult.pain < bestEval.pain) {
+        bestEval = evalResult;
+        bestAssignment = child;
+        bestGeneration = generations;
+        lastImprovementGen = generations;
+      }
+    }
+
+    // Sort by fitness for next generation
+    const sorted = nextPopulation.map((_, i) => i).sort((a, b) => nextFitnessScores[a] - nextFitnessScores[b]);
+    population = sorted.map(i => nextPopulation[i]);
+    fitnessScores = sorted.map(i => nextFitnessScores[i]);
+
+    // Stagnation tracking
+    if (generations - lastImprovementGen > stagnationLimit) {
+      // Inject fresh random individuals to escape local minima
+      const injectCount = Math.max(2, Math.floor(populationSize * 0.15));
+      for (let i = 0; i < injectCount; i++) {
+        const idx = population.length - 1 - i;
+        if (idx < 0) break;
+        const fresh = createRandomAssignment(radios);
+        const freshEval = evaluateAssignment(radios, fresh, channelSummary, maxChanges);
+        population[idx] = fresh;
+        fitnessScores[idx] = freshEval.pain;
+        if (freshEval.pain < bestEval.pain) {
+          bestEval = freshEval;
+          bestAssignment = fresh;
+          bestGeneration = generations;
+          lastImprovementGen = generations;
+        }
+      }
+      stagnationCounter++;
+    }
+
+    // Report progress periodically
+    reportCounter++;
+    if (reportCounter % REPORT_INTERVAL === 0 || generations === 1) {
+      await sendProgress('searching');
     }
   }
 
-  best.searchMeta = {
-    mode: 'generational',
+  // 3. Build final result from best assignment
+  await sendProgress('finalizing');
+
+  const result = assignmentToResult(bestAssignment, radios, channelSummary, aps, allAPs, proximityGraph, maxChanges, bestEval);
+
+  result.searchMeta = {
+    mode: 'ga',
+    populationSize,
     timeBudgetMs,
-    generationLimit,
-    generationsTried: generations + 1, // include baseline generation 0
+    generationsTried: generations,
     bestGeneration,
     durationMs: Date.now() - started,
-    objectiveScore: Math.round(bestScore * 100) / 100
+    stagnationResets: stagnationCounter,
+    objectiveScore: Math.round(bestEval.pain * 100) / 100,
+    bestImprovementPct: bestEval.improvementPct,
   };
 
-  return best;
+  return result;
 }
 
-module.exports = { runConstrainedOptimizer, CHANNELS_24, CHANNELS_5 };
+// ── Public entrypoint ────────────────────────────────────────────────────────
+
+function runConstrainedOptimizer(radios, channelSummary, aps, options = {}) {
+  const mode = String(options.searchMode || 'heuristic').toLowerCase();
+
+  if (mode === 'ga' || mode === 'generational') {
+    // Synchronous version — will return the heuristic fallback immediately.
+    // Use /api/optimize/progress (SSE) or pass onProgress for async GA.
+    // For direct sync calls (e.g. tests), fall back to heuristic.
+    const result = runConstrainedOptimizerSingle(radios, channelSummary, aps, options);
+    result.searchMeta = { mode: 'ga_sync_fallback', reason: 'Use runGeneticOptimizer via SSE for GA' };
+    return result;
+  }
+
+  const result = runConstrainedOptimizerSingle(radios, channelSummary, aps, options);
+  result.searchMeta = { mode: 'heuristic', generationsTried: 1, durationMs: 0 };
+  return result;
+}
+
+module.exports = {
+  runConstrainedOptimizer,
+  runGeneticOptimizer,
+  evaluateAssignment,
+  CHANNELS_24,
+  CHANNELS_5,
+};
