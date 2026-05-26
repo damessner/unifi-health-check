@@ -362,6 +362,17 @@ app.get('/api/optimize', async (req, res) => {
       ? rawMin
       : 5;
 
+    const searchMode = String(req.query.searchMode || 'heuristic').toLowerCase();
+    const rawBudget = parseInt(req.query.timeBudgetMs, 10);
+    const timeBudgetMs = (Number.isFinite(rawBudget) && rawBudget >= 1000 && rawBudget <= 300000)
+      ? rawBudget
+      : 150000;
+
+    const rawGen = parseInt(req.query.generationLimit, 10);
+    const generationLimit = (Number.isFinite(rawGen) && rawGen >= 1 && rawGen <= 200000)
+      ? rawGen
+      : 20000;
+
     const { devices, clients } = await getFreshData(force);
     const channelAnalysis = analyzer.analyzeChannels(devices);
     const clientAnalysis  = analyzer.analyzeClients(clients, devices);
@@ -371,7 +382,14 @@ app.get('/api/optimize', async (req, res) => {
       channelAnalysis.radios,
       channelAnalysis.summary,
       apsModel,
-      { maxChanges, minImprovementThreshold }
+      {
+        maxChanges,
+        minImprovementThreshold,
+        searchMode,
+        timeBudgetMs,
+        generationLimit,
+        enforceMinImprovement: true
+      }
     );
 
     res.json({

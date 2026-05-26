@@ -1872,10 +1872,11 @@ async function runBatchOptimizer(forceRefresh = false) {
   const btn = document.getElementById('btn-run-optimizer');
   const rescanBtn = document.getElementById('btn-rescan-reopt');
   const maxChanges = parseInt(document.getElementById('opt-max-changes')?.value || '8', 10);
+  const optimizerRunMs = 150000; // 2.5 minutes generational search
 
   if (btn) {
     btn.disabled = true;
-    btn.innerHTML = '<i data-lucide="loader" style="width:14px; height:14px; animation:spin 1s infinite linear;"></i> Optimizing...';
+    btn.innerHTML = '<i data-lucide="loader" style="width:14px; height:14px; animation:spin 1s infinite linear;"></i> Optimizing (2-3 min)...';
   }
   if (rescanBtn) rescanBtn.disabled = true;
 
@@ -1883,7 +1884,7 @@ async function runBatchOptimizer(forceRefresh = false) {
   setWorkflowStep('analyze', 'active');
 
   try {
-    const url = `/api/optimize?maxChanges=${maxChanges}&force=${forceRefresh}`;
+    const url = `/api/optimize?maxChanges=${maxChanges}&force=${forceRefresh}&searchMode=generational&timeBudgetMs=${optimizerRunMs}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP status error: ${res.status}`);
 
@@ -1925,7 +1926,14 @@ async function runBatchOptimizer(forceRefresh = false) {
 
     const changedCount = payload.changedAPs.length;
     const imp = payload.improvementReport.estimatedImprovementPct;
-    showToast(`Round ${currentRound}: ${changedCount} APs selected, ~${imp}% estimated improvement. Apply, then re-scan.`, 'success');
+    const gens = payload.searchMeta && payload.searchMeta.generationsTried
+      ? payload.searchMeta.generationsTried
+      : 1;
+    const durSec = payload.searchMeta && payload.searchMeta.durationMs
+      ? Math.max(1, Math.round(payload.searchMeta.durationMs / 1000))
+      : null;
+    const searchInfo = durSec ? ` (${gens} generations, ${durSec}s search)` : '';
+    showToast(`Round ${currentRound}: ${changedCount} APs selected, ~${imp}% estimated improvement${searchInfo}. Apply, then re-scan.`, 'success');
 
   } catch (err) {
     console.error('[Optimizer] Run failed:', err);

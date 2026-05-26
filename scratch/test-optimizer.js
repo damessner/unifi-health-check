@@ -122,7 +122,7 @@ console.log('\n=== runConstrainedOptimizer — Basic Invocation ===');
         retry: ap.radios.na.tx_retries_pct, clients: ap.radios.na.num_sta }),
   ]);
   const chSummary = buildChannelSummary(radios);
-  const result = optimizer.runConstrainedOptimizer(radios, chSummary, aps, { maxChanges: 2 });
+  const result = optimizer.runConstrainedOptimizer(radios, chSummary, aps, { maxChanges: 2, searchMode: 'heuristic' });
 
   assert('Returns an object', result && typeof result === 'object');
   assert('Has plan', typeof result.plan === 'object');
@@ -162,7 +162,7 @@ console.log('\n=== Health Guard — Healthy APs Not Changed ===');
       { cu: ap.radios.na.cu_total, cci: 0 }),
   ]);
   const chSummary = buildChannelSummary(radios);
-  const result = optimizer.runConstrainedOptimizer(radios, chSummary, aps, { maxChanges: 5 });
+  const result = optimizer.runConstrainedOptimizer(radios, chSummary, aps, { maxChanges: 5, searchMode: 'heuristic' });
 
   assert('No changes for healthy low-CCI APs',
     result.changedAPs.length === 0);
@@ -180,7 +180,7 @@ console.log('\n=== Health Guard — Single AP, No Interference ===');
     makeRadio('ap-01', 'EG-Flur', 'na', 36, '5GHz', { cu: 15, cci: 0 }),
   ];
   const chSummary = buildChannelSummary(radios);
-  const result = optimizer.runConstrainedOptimizer(radios, chSummary, aps, { maxChanges: 5 });
+  const result = optimizer.runConstrainedOptimizer(radios, chSummary, aps, { maxChanges: 5, searchMode: 'heuristic' });
 
   assert('Single healthy AP — no changes', result.changedAPs.length === 0);
 }
@@ -203,7 +203,7 @@ console.log('\n=== Stressed APs — Changes Suggested ===');
         retry: ap.radios.na.tx_retries_pct, clients: ap.radios.na.num_sta }),
   ]);
   const chSummary = buildChannelSummary(radios);
-  const result = optimizer.runConstrainedOptimizer(radios, chSummary, aps, { maxChanges: 5 });
+  const result = optimizer.runConstrainedOptimizer(radios, chSummary, aps, { maxChanges: 5, searchMode: 'heuristic' });
 
   assert('High-CCI APs — changes suggested', result.changedAPs.length > 0);
   assert('changedAPs[0] has mac', result.changedAPs[0].mac);
@@ -229,7 +229,7 @@ console.log('\n=== Improvement Report — Before vs After ===');
       { cu: ap.radios.na.cu_total, cci: ap.radios.na.cci_count }),
   ]);
   const chSummary = buildChannelSummary(radios);
-  const result = optimizer.runConstrainedOptimizer(radios, chSummary, aps, { maxChanges: 4 });
+  const result = optimizer.runConstrainedOptimizer(radios, chSummary, aps, { maxChanges: 4, searchMode: 'heuristic' });
   const report = result.improvementReport;
 
   assert('before.avgCu24 computed', report.before.avgCu24 > 0);
@@ -275,7 +275,7 @@ console.log('\n=== Floor Inference via Proximity Graph ===');
     makeRadio(ap.mac, ap.name, 'na', ap.radios.na.channel, '5GHz'),
   ]);
   const chSummary = buildChannelSummary(radios);
-  const result = optimizer.runConstrainedOptimizer(radios, chSummary, aps, { maxChanges: 2 });
+  const result = optimizer.runConstrainedOptimizer(radios, chSummary, aps, { maxChanges: 2, searchMode: 'heuristic' });
 
   const graph = result.proximityGraph;
   assert('Proximity graph has all APs',
@@ -307,7 +307,7 @@ console.log('\n=== Floor Inference via Proximity Graph ===');
 console.log('\n=== Edge Cases ===');
 {
   // Empty arrays
-  const result1 = optimizer.runConstrainedOptimizer([], {}, [], { maxChanges: 5 });
+  const result1 = optimizer.runConstrainedOptimizer([], {}, [], { maxChanges: 5, searchMode: 'heuristic' });
   assert('Empty radios/aps — totalAPs is 0', result1.totalAPs === 0);
   assert('Empty radios/aps — no changes', result1.changedAPs.length === 0);
   assert('Empty radios/aps — batchSummary present', !!result1.batchSummary);
@@ -319,7 +319,7 @@ console.log('\n=== Edge Cases ===');
     makeRadio('ap-01', 'EG-Flur', 'na', 36, '5GHz'),
   ];
   const chSummary = buildChannelSummary(radios);
-  const result2 = optimizer.runConstrainedOptimizer(radios, chSummary, aps, { maxChanges: 5 });
+  const result2 = optimizer.runConstrainedOptimizer(radios, chSummary, aps, { maxChanges: 5, searchMode: 'heuristic' });
   assert('Single AP — totalAPs is 1', result2.totalAPs === 1);
   assert('Single AP — no changes (healthy)', result2.changedAPs.length === 0);
 
@@ -354,18 +354,18 @@ console.log('\n=== Edge Cases ===');
         retry: ap.radios.ng.tx_retries_pct, clients: ap.radios.ng.num_sta }),
   ]);
   const chSummaryNg = buildChannelSummary(radiosNg);
-  const result3 = optimizer.runConstrainedOptimizer(radiosNg, chSummaryNg, apsNg, { maxChanges: 5 });
+  const result3 = optimizer.runConstrainedOptimizer(radiosNg, chSummaryNg, apsNg, { maxChanges: 5, searchMode: 'heuristic' });
   assert('Two NG-only APs on same channel — totalAPs is 2', result3.totalAPs === 2);
   assert('Two NG-only APs on same channel — changes suggested', result3.changedAPs.length > 0);
 
   // Options: maxChanges=0
-  const result4 = optimizer.runConstrainedOptimizer(radiosNg, chSummaryNg, apsNg, { maxChanges: 0 });
+  const result4 = optimizer.runConstrainedOptimizer(radiosNg, chSummaryNg, apsNg, { maxChanges: 0, searchMode: 'heuristic' });
   assert('maxChanges=0 — no candidates', result4.candidatesConsidered === 0);
   assert('maxChanges=0 — no changes', result4.changedAPs.length === 0);
 
   // Options: minImprovementThreshold very high
   const result5 = optimizer.runConstrainedOptimizer(radiosNg, chSummaryNg, apsNg,
-    { maxChanges: 5, minImprovementThreshold: 999 });
+    { maxChanges: 5, minImprovementThreshold: 999, searchMode: 'heuristic' });
   assert('Very high minImprovementThreshold — result still valid', !!result5.plan);
 }
 
@@ -381,7 +381,7 @@ console.log('\n=== Channel Overlap — 2.4GHz ===');
     makeRadio(ap.mac, ap.name, 'na', ap.radios.na.channel, '5GHz'),
   ]);
   const chSummary = buildChannelSummary(radios);
-  const result = optimizer.runConstrainedOptimizer(radios, chSummary, aps, { maxChanges: 5 });
+  const result = optimizer.runConstrainedOptimizer(radios, chSummary, aps, { maxChanges: 5, searchMode: 'heuristic' });
 
   // Channels 1, 6, 11 are non-overlapping, so healthy APs should stay put
   assert('Non-overlapping 2.4GHz APs — likely no changes', result.changedAPs.length >= 0);
@@ -400,10 +400,39 @@ console.log('\n=== Default Options ===');
       { cu: ap.radios.na.cu_total, cci: ap.radios.na.cci_count }),
   ]);
   const chSummary = buildChannelSummary(radios);
-  const result = optimizer.runConstrainedOptimizer(radios, chSummary, aps);
+  const result = optimizer.runConstrainedOptimizer(radios, chSummary, aps, { searchMode: 'heuristic' });
   // Default maxChanges should be 10 (from DEFAULT_MAX_CHANGES)
   assert('Default maxChanges = 10', result.batchSummary.maxChanges === 10);
   assert('Default options — result valid', result.changedAPs.length >= 0);
+}
+
+console.log('\n=== Generational Mode ===');
+{
+  const aps = [
+    makeAP('ap-01', 'EG-Flur', 1, 40, { cu24: 82, cu5: 88, cci5: 8 }),
+    makeAP('ap-02', 'EG-KlasseA', 6, 40, { cu24: 78, cu5: 84, cci5: 7 }),
+    makeAP('ap-03', '1OG-Flur', 11, 44, { cu24: 72, cu5: 80, cci5: 6 }),
+  ];
+  const radios = aps.flatMap(ap => [
+    makeRadio(ap.mac, ap.name, 'ng', ap.radios.ng.channel, '2.4GHz',
+      { cu: ap.radios.ng.cu_total, cci: ap.radios.ng.cci_count }),
+    makeRadio(ap.mac, ap.name, 'na', ap.radios.na.channel, '5GHz',
+      { cu: ap.radios.na.cu_total, cci: ap.radios.na.cci_count }),
+  ]);
+  const chSummary = buildChannelSummary(radios);
+  const result = optimizer.runConstrainedOptimizer(radios, chSummary, aps, {
+    searchMode: 'generational',
+    maxChanges: 3,
+    timeBudgetMs: 1200,
+    generationLimit: 500,
+    minImprovementThreshold: 0,
+    enforceMinImprovement: true
+  });
+
+  assert('Generational mode returns searchMeta', !!result.searchMeta);
+  assert('Generational mode recorded mode', result.searchMeta.mode === 'generational');
+  assert('Generational mode tries >1 generation', result.searchMeta.generationsTried >= 2);
+  assert('Generational mode respects duration floor', result.searchMeta.durationMs >= 0);
 }
 
 console.log('\n=== Change Plan Has Correct Structure ===');
@@ -419,7 +448,7 @@ console.log('\n=== Change Plan Has Correct Structure ===');
       { cu: ap.radios.na.cu_total, cci: ap.radios.na.cci_count }),
   ]);
   const chSummary = buildChannelSummary(radios);
-  const result = optimizer.runConstrainedOptimizer(radios, chSummary, aps, { maxChanges: 2 });
+  const result = optimizer.runConstrainedOptimizer(radios, chSummary, aps, { maxChanges: 2, searchMode: 'heuristic' });
 
   // Each plan entry should have suggestedChannel, changeNeeded, impact
   const planKeys = Object.keys(result.plan);

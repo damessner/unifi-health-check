@@ -279,9 +279,10 @@ function scoreCombo(ap, ch24, ch5, vLoad24, vLoad5, proximityGraph, floorAssignm
  * @param {number} [options.minImprovementThreshold=5] - Min % improvement to include
  * @returns {Object} { plan, improvementReport, batchSummary }
  */
-function runConstrainedOptimizer(radios, channelSummary, aps, options = {}) {
+function runConstrainedOptimizerSingle(radios, channelSummary, aps, options = {}) {
   const maxChanges = options.maxChanges ?? DEFAULT_MAX_CHANGES;
   const minImprovementThreshold = options.minImprovementThreshold ?? MIN_IMPROVEMENT_THRESHOLD;
+  const comboJitter = Number.isFinite(Number(options.comboJitter)) ? Number(options.comboJitter) : 0;
 
   // FIX 5: No module-level global — allAPs passed explicitly through every function
   const allAPs = Array.isArray(aps) ? aps : [];
@@ -391,7 +392,10 @@ function runConstrainedOptimizer(radios, channelSummary, aps, options = {}) {
     valid24.forEach(ch24 => {
       valid5.forEach(ch5 => {
         // FIX 5: passes allAPs explicitly
-        const score = scoreCombo(ap, ch24, ch5, vLoad24, vLoad5, proximityGraph, floorAssignments, allAPs);
+        let score = scoreCombo(ap, ch24, ch5, vLoad24, vLoad5, proximityGraph, floorAssignments, allAPs);
+        if (comboJitter > 0) {
+          score += (Math.random() - 0.5) * comboJitter;
+        }
         if (score < bestScore) {
           bestScore = score;
           bestCombo = { ch24, ch5 };
@@ -560,7 +564,7 @@ function runConstrainedOptimizer(radios, channelSummary, aps, options = {}) {
     ),
   };
 
-  return {
+  const result = {
     plan,
     changedAPs,
     totalAPs: apList.length,
@@ -576,6 +580,114 @@ function runConstrainedOptimizer(radios, channelSummary, aps, options = {}) {
     improvementReport,
     proximityGraph,
   };
+
+  // Optional quality floor: if predicted gain is below threshold, do not suggest
+  // changes for this round to avoid noisy low-impact recommendations.
+  if (options.enforceMinImprovement === true && result.improvementReport.estimatedImprovementPct < minImprovementThreshold) {
+    result.plan = {};
+    result.changedAPs = [];
+    result.batchSummary.changesSuggested = 0;
+    result.batchSummary.recommendation =
+      `No beneficial changes found above ${minImprovementThreshold}% predicted improvement.`;
+  }
+
+  return result;
+}
+
+function computePlanObjective(result) {
+  const after = (result.improvementReport && result.improvementReport.after) || {};
+  const estImprovement = (result.improvementReport && result.improvementReport.estimatedImprovementPct) || 0;
+
+  // Lower score is better.
+  let score = 0;
+  score += (after.avgCu24 || 0) * 1.4;
+  score += (after.avgCu5 || 0) * 1.4;
+  score += (after.totalCci || 0) * 2.2;
+  score += (after.congestedCount || 0) * 30;
+  score += (after.warningCount || 0) * 10;
+  score += (result.changedAPs ? result.changedAPs.length : 0) * 0.5;
+  score -= estImprovement * 8;
+  if (estImprovement < 0) score += Math.abs(estImprovement) * 20;
+  return score;
+}
+
+function clampInt(n, min, max, fallback) {
+  if (!Number.isFinite(n)) return fallback;
+  const v = Math.trunc(n);
+  if (v < min) return min;
+  if (v > max) return max;
+  return v;
+}
+
+/**
+ * Public optimizer entrypoint.
+ *
+ * Modes:
+ * - heuristic (default): one fast deterministic pass
+ * - generational: iterative multi-start search over 2-3 minutes (configurable)
+ */
+function runConstrainedOptimizer(radios, channelSummary, aps, options = {}) {
+  const mode = String(options.searchMode || 'heuristic').toLowerCase();
+
+  // Fast default mode keeps existing behavior for exports and tests.
+  if (mode !== 'generational') {
+    const result = runConstrainedOptimizerSingle(radios, channelSummary, aps, options);
+    result.searchMeta = {
+      mode: 'heuristic',
+      generationsTried: 1,
+      durationMs: 0
+    };
+    return result;
+  }
+
+  const timeBudgetMs = clampInt(Number(options.timeBudgetMs), 1000, 300000, 150000);
+  const generationLimit = clampInt(Number(options.generationLimit), 1, 200000, 20000);
+
+  const started = Date.now();
+  let generations = 0;
+
+  // Baseline deterministic solution (generation 0).
+  let best = runConstrainedOptimizerSingle(radios, channelSummary, aps, {
+    ...options,
+    comboJitter: 0
+  });
+  let bestScore = computePlanObjective(best);
+  let bestGeneration = 0;
+
+  while ((Date.now() - started) < timeBudgetMs && generations < generationLimit) {
+    generations++;
+
+    // Increasing jitter cycle explores different local minima.
+    const jitter = 1.5 + (generations % 11) * 1.2;
+    const candidate = runConstrainedOptimizerSingle(radios, channelSummary, aps, {
+      ...options,
+      comboJitter: jitter
+    });
+
+    const candScore = computePlanObjective(candidate);
+    const isBetter =
+      candScore < bestScore ||
+      (candScore === bestScore &&
+        candidate.improvementReport.estimatedImprovementPct > best.improvementReport.estimatedImprovementPct);
+
+    if (isBetter) {
+      best = candidate;
+      bestScore = candScore;
+      bestGeneration = generations;
+    }
+  }
+
+  best.searchMeta = {
+    mode: 'generational',
+    timeBudgetMs,
+    generationLimit,
+    generationsTried: generations + 1, // include baseline generation 0
+    bestGeneration,
+    durationMs: Date.now() - started,
+    objectiveScore: Math.round(bestScore * 100) / 100
+  };
+
+  return best;
 }
 
 module.exports = { runConstrainedOptimizer, CHANNELS_24, CHANNELS_5 };
