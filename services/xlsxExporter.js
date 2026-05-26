@@ -163,39 +163,29 @@ function buildChannelSheet(wb, activeRadios, plan, changedAPs, batchSummary, imp
   const now = new Date().toLocaleString('de-AT');
 
   // Title row
-  ws.mergeCells('A1:P1');
+  ws.mergeCells('A1:G1');
   const title = ws.getCell('A1');
-  title.value = `Constrained Batch Channel Optimization Plan  •  ${now}`;
+  title.value = `Optimization Plan  •  ${now}`;
   title.font = S.fntTitle; title.fill = S.fHeader; title.alignment = S.center;
   ws.getRow(1).height = 28;
 
   // Subtitle
-  ws.mergeCells('A2:P2');
+  ws.mergeCells('A2:G2');
   const sub = ws.getCell('A2');
-  sub.value = `BATCH MODE: ${changedAPs.length} APs selected for change (max ${batchSummary.maxChanges} per round). ` +
-    `Fix these first, then re-scan and re-run to get the next batch. ${improvementReport.estimatedImprovementPct}% estimated improvement.`;
+  sub.value = `${changedAPs.length} APs · ${improvementReport.estimatedImprovementPct}% estimated improvement`;
   sub.font = { name: 'Calibri', size: 9, italic: true, color: { argb: 'FFFFFFFF' } };
   sub.fill = S.fSubHdr; sub.alignment = S.center;
   ws.getRow(2).height = 15;
 
-  // Column definitions
+  // Simplified columns: AP Name | Floor | 2.4GHz | 5GHz | Impact Score | Health
   const cols = [
-    { header: '#',            key: 'rank',    width: 5  },
-    { header: 'Batch',        key: 'batch',   width: 7  },
-    { header: 'AP Name',      key: 'name',    width: 28 },
-    { header: 'Floor',        key: 'floor',   width: 7  },
-    { header: 'Model',        key: 'model',   width: 14 },
-    { header: 'Band',         key: 'band',    width: 8  },
-    { header: 'Live Ch',      key: 'liveCh',  width: 10 },
-    { header: 'Config Ch',    key: 'cfgCh',   width: 10 },
-    { header: 'CU Total %',   key: 'cu',      width: 11 },
-    { header: 'TX Retry %',   key: 'retry',   width: 11 },
-    { header: 'Co-Ch Peers',  key: 'cci',     width: 12 },
-    { header: 'Health Score', key: 'score',   width: 13 },
-    { header: 'Suggested Ch', key: 'suggest', width: 12 },
-    { header: 'Change?',      key: 'change',  width: 9  },
-    { header: 'Band Changed', key: 'bandChg', width: 13 },
-    { header: 'Health',       key: 'health',  width: 10 },
+    { header: 'AP Name',      key: 'name',    width: 30 },
+    { header: 'Floor',        key: 'floor',   width: 8  },
+    { header: '2.4 GHz',      key: 'ch24',    width: 16 },
+    { header: '5 GHz',        key: 'ch5',     width: 16 },
+    { header: 'Impact Score', key: 'impact',  width: 14 },
+    { header: 'Health',       key: 'health',  width: 12 },
+    { header: 'Est. Improvement', key: 'estImp', width: 20 },
   ];
 
   cols.forEach((col, i) => {
@@ -205,98 +195,94 @@ function buildChannelSheet(wb, activeRadios, plan, changedAPs, batchSummary, imp
   ws.getRow(3).height = 22;
   ws.views = [{ state: 'frozen', xSplit: 0, ySplit: 3 }];
 
-  // Build changed MAC set for quick lookup
-  const changedMacSet = new Set(changedAPs.map(c => c.mac));
-
-  // Sort radios: changed APs first (by health score), then unchanged (by CU)
-  const sortedRadios = [...activeRadios].sort((a, b) => {
-    const aChanged = changedMacSet.has(a.apMac) ? 1 : 0;
-    const bChanged = changedMacSet.has(b.apMac) ? 1 : 0;
-    if (aChanged !== bChanged) return bChanged - aChanged;
-
-    const aKey = `${a.apMac}_${a.radio}`;
-    const bKey = `${b.apMac}_${b.radio}`;
-    const aImpact = (plan[aKey] || {}).impact || 0;
-    const bImpact = (plan[bKey] || {}).impact || 0;
-    return bImpact - aImpact;
+  // Build a map of AP-mac → changes
+  const apChanges = {};
+  changedAPs.forEach(ap => {
+    apChanges[ap.mac] = ap;
   });
 
-  let rankCounter = 0;
-  sortedRadios.forEach((r) => {
-    const key = `${r.apMac}_${r.radio}`;
-    const opt = plan[key] || {};
-    const suggest = opt.suggestedChannel || r.channel;
-    const changed = opt.changeNeeded;
+  // Also include unchanged APs (for full picture)
+  const apMap = {};
+  activeRadios.forEach(r => {
+    if (!apMap[r.apMac]) {
+      apMap[r.apMac] = {
+        mac: r.apMac,
+        name: r.apName,
+        model: r.model,
+        radios: {}
+      };
+    }
+    apMap[r.apMac].radios[r.radio] = r;
+  });
 
-    rankCounter++;
-    const inBatch = changedMacSet.has(r.apMac);
+  let rowNum = 3;
+  Object.values(apMap).forEach(ap => {
+    const change = apChanges[ap.mac];
+    const r24 = ap.radios.ng;
+    const r5 = ap.radios.na;
 
-    // Determine which band is changing
-    let bandChanged = '—';
-    if (changed) {
-      const is24 = r.band === '2.4GHz' || r.radio === 'ng';
-      bandChanged = is24 ? '2.4 GHz' : '5 GHz';
+    // Build channel strings
+    let ch24Str = r24 ? `${r24.channel}` : '—';
+    let ch5Str = r5 ? `${r5.channel}` : '—';
+    let impact = '—';
+    let health = r24 ? (r24.health || '—') : (r5 ? r5.health || '—' : '—');
+
+    if (change) {
+      if (change.oldNgCh !== null && change.newNgCh !== null) {
+        ch24Str = `${change.oldNgCh} → ${change.newNgCh}`;
+      } else if (r24) {
+        ch24Str = `${r24.channel}`;
+      }
+      if (change.oldNaCh !== null && change.newNaCh !== null) {
+        ch5Str = `${change.oldNaCh} → ${change.newNaCh}`;
+      } else if (r5) {
+        ch5Str = `${r5.channel}`;
+      }
+      impact = change.healthScore || '—';
+      health = 'changed';
     }
 
-    // Get floor from the changed APs list
-    const apChange = changedAPs.find(c => c.mac === r.apMac);
-    const floor = apChange ? apChange.floor : '—';
-    const configuredCh = (r.configured_channel !== undefined && r.configured_channel !== null)
-      ? r.configured_channel
-      : '—';
-    const channelDrift = configuredCh !== '—' && Number(configuredCh) !== Number(r.channel);
+    rowNum++;
+    const row = ws.getRow(rowNum);
+    const changed = !!change;
 
     const rowData = [
-      rankCounter,
-      inBatch ? `Batch 1` : '—',
-      r.apName, floor, r.model, r.band, r.channel,
-      configuredCh,
-      r.cu_total || 0,
-      Math.round((r.tx_retries_pct || 0) * 10) / 10,
-      r.cci_count || 0,
-      opt.impact || 0,
-      suggest,
-      changed ? 'YES' : 'no',
-      bandChanged,
-      r.health || '—'
+      ap.name,
+      change ? change.floor : '—',
+      ch24Str,
+      ch5Str,
+      impact,
+      health,
+      changed ? `${improvementReport.estimatedImprovementPct}%` : '—'
     ];
 
-    const cellFills = [
-      inBatch ? S.fBlue : S.fGray, // '#'
-      inBatch ? S.fBlue : null, // 'Batch'
-      null, // 'AP Name'
-      null, // 'Floor'
-      null, // 'Model'
-      null, // 'Band'
-      null, // 'Live Ch'
-      channelDrift ? S.fOrange : S.fGreen, // 'Config Ch'
-      pctFill(r.cu_total || 0), // 'CU Total %'
-      pctFill(r.tx_retries_pct || 0), // 'TX Retry %'
-      (r.cci_count || 0) >= 10 ? S.fOrange : S.fGreen, // 'Co-Ch Peers'
-      opt.impact >= 80 ? S.fRed : opt.impact >= 40 ? S.fOrange : opt.impact >= 15 ? S.fYellow : S.fGray, // 'Health Score'
-      changed ? S.fPurple : S.fGreen, // 'Suggested Ch'
-      changed ? S.fOrange : null, // 'Change?'
-      changed ? S.fPurple : null, // 'Band Changed'
-      healthFill(r.health || '') // 'Health'
+    const fills = [
+      null, // AP Name
+      null, // Floor
+      changed ? S.fPurple : null, // 2.4GHz - purple if changed
+      changed ? S.fPurple : null, // 5GHz - purple if changed
+      impact !== '—' && impact > 50 ? S.fRed : impact !== '—' && impact > 20 ? S.fOrange : S.fGreen, // Impact
+      null, // Health
+      changed ? S.fBlue : null, // Est. Improvement
     ];
 
-    const row = ws.getRow(rankCounter + 3);
     rowData.forEach((v, ci) => {
       const cell = row.getCell(ci + 1);
-      applyCell(cell, v, cellFills[ci]);
-      if (ci === 1) cell.font = { ...S.fntNormal, bold: inBatch, color: inBatch ? { argb: 'FFFFFFFF' } : undefined };
-      if (ci === 8 || ci === 9) cell.numFmt = '0.0"%"';
+      applyCell(cell, v, fills[ci]);
+      if (changed) {
+        cell.font = { ...S.fntNormal, bold: true };
+      }
     });
-    row.height = 18;
+    row.height = 20;
   });
 
-  // Add batch summary row at the bottom
-  const summaryStartRow = sortedRadios.length + 5;
-  ws.mergeCells(`A${summaryStartRow}:P${summaryStartRow}`);
-  const summaryCell = ws.getCell(`A${summaryStartRow}`);
-  summaryCell.value = batchSummary.recommendation;
-  summaryCell.font = { name: 'Calibri', size: 9, italic: true, color: { argb: 'FF27AE60' } };
-  summaryCell.fill = S.fSubHdr; summaryCell.alignment = S.center;
+  // Summary row
+  const summaryRow = rowNum + 2;
+  ws.mergeCells(`A${summaryRow}:G${summaryRow}`);
+  const sc = ws.getCell(`A${summaryRow}`);
+  sc.value = batchSummary.recommendation;
+  sc.font = { name: 'Calibri', size: 9, italic: true, color: { argb: 'FF27AE60' } };
+  sc.fill = S.fSubHdr; sc.alignment = S.center;
 }
 
 // ── Client Issues Sheet ──────────────────────────────────────────────────────

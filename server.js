@@ -424,9 +424,10 @@ app.get('/api/optimize/progress', async (req, res) => {
     const rawMax = parseInt(req.query.maxChanges, 10);
     const maxChanges = (Number.isFinite(rawMax) && rawMax > 0 && rawMax <= 100) ? rawMax : 10;
     const rawBudget = parseInt(req.query.timeBudgetMs, 10);
-    const timeBudgetMs = (Number.isFinite(rawBudget) && rawBudget >= 1000 && rawBudget <= 300000) ? rawBudget : 150000;
+    const timeBudgetMs = (Number.isFinite(rawBudget) && rawBudget >= 1000 && rawBudget <= 28800000) ? rawBudget : 150000;
+    const searchMode = String(req.query.searchMode || 'ga').toLowerCase();
     const rawPop = parseInt(req.query.populationSize, 10);
-    const populationSize = (Number.isFinite(rawPop) && rawPop >= 10 && rawPop <= 200) ? rawPop : 40;
+    const populationSize = (Number.isFinite(rawPop) && rawPop >= 10 && rawPop <= 200) ? rawPop : (searchMode === 'deep' ? 100 : 40);
 
     const { devices, clients } = await getFreshData(force);
     const channelAnalysis = analyzer.analyzeChannels(devices);
@@ -460,7 +461,7 @@ app.get('/api/optimize/progress', async (req, res) => {
       channelAnalysis.radios,
       channelAnalysis.summary,
       apsModel,
-      { maxChanges, timeBudgetMs, populationSize },
+      { maxChanges, timeBudgetMs, populationSize, searchMode },
       (progress) => {
         // Stream progress to the frontend
         sendEvent('progress', progress);

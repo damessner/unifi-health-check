@@ -143,6 +143,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // Set initial page header text
   updateHeaderContext();
 
+  // Default to optimizer tab as the first thing the user sees
+  switchTab('optimizer');
+
   // Check Admin session status
   checkAdminStatus();
 
@@ -226,6 +229,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const elResetOpt = document.getElementById('btn-reset-opt');
   if (elResetOpt) elResetOpt.addEventListener('click', resetOptimizerState);
 
+  // Overnight optimizer button
+  const elOvernight = document.getElementById('btn-overnight-optimizer');
+  if (elOvernight) elOvernight.addEventListener('click', runDeepOptimizer);
+
   // Batch history toggle header
   const elHistoryHeader = document.getElementById('opt-history-header');
   if (elHistoryHeader) elHistoryHeader.addEventListener('click', toggleBatchHistory);
@@ -256,6 +263,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const elCancelConfirm = document.getElementById('btn-cancel-confirm');
   if (elCancelConfirm) elCancelConfirm.addEventListener('click', closeConfirmModal);
+
+  // Metric detail modal
+  const elCloseMetric = document.getElementById('btn-close-metric-modal');
+  if (elCloseMetric) elCloseMetric.addEventListener('click', closeMetricDetailModal);
+
+  const elCloseMetric2 = document.getElementById('btn-close-metric');
+  if (elCloseMetric2) elCloseMetric2.addEventListener('click', closeMetricDetailModal);
 
   // Note: Auto-sync / polling is disabled to prevent overloading the UniFi Hardware controller.
   // Refresh manually using the prominent 'Get Live Data' action button.
@@ -1904,6 +1918,42 @@ function updateGaProgressUI(p) {
     fill.style.width = `${pct}%`;
   }
   if (status && p.statusText) status.textContent = p.statusText;
+
+  // Diversity card
+  const div = document.getElementById('ga-diversity');
+  if (div && p.diversity != null) {
+    div.textContent = String(Math.round(p.diversity));
+    // Color based on diversity level
+    if (p.diversity < 20) div.style.color = '#34d399';   // converged (good)
+    else if (p.diversity < 80) div.style.color = '#fbbf24'; // exploring
+    else div.style.color = '#f87171';                        // highly diverse
+  }
+  // Mean pain card
+  const meanP = document.getElementById('ga-mean-pain');
+  if (meanP && p.meanPain != null) {
+    meanP.textContent = String(Math.round(p.meanPain * 10) / 10);
+  }
+
+  // Health range bar
+  const hr = document.getElementById('ga-health-range');
+  const hrBar = document.getElementById('ga-health-bar');
+  const hrBest = document.getElementById('ga-hr-best');
+  const hrWorst = document.getElementById('ga-hr-worst');
+  const hrLabel = document.getElementById('ga-hr-label');
+  if (hr && p.worstPain != null && p.bestPain != null && p.meanPain != null) {
+    hr.style.display = 'block';
+    const range = p.worstPain - p.bestPain || 1;
+    const bestPct = Math.max(2, Math.min(98, ((p.bestPain - p.bestPain) / range) * 100));
+    const meanPct = Math.max(2, Math.min(98, ((p.meanPain - p.bestPain) / range) * 100));
+    const worstPct = Math.max(2, Math.min(98, ((p.worstPain - p.bestPain) / range) * 100));
+    if (hrBar) {
+      hrBar.style.marginLeft = `${bestPct}%`;
+      hrBar.style.width = `${Math.max(4, worstPct - bestPct)}%`;
+    }
+    if (hrBest) hrBest.textContent = String(Math.round(p.bestPain * 10) / 10);
+    if (hrWorst) hrWorst.textContent = String(Math.round(p.worstPain * 10) / 10);
+    if (hrLabel) hrLabel.textContent = `Median ${Math.round(p.medianPain * 10) / 10} | Best ${Math.round(p.bestPain * 10) / 10} \u2192 Worst ${Math.round(p.worstPain * 10) / 10}`;
+  }
 }
 
 function addGaLogEntry(text, type) {
@@ -1932,11 +1982,11 @@ async function runBatchOptimizer(forceRefresh = false) {
   const btn = document.getElementById('btn-run-optimizer');
   const rescanBtn = document.getElementById('btn-rescan-reopt');
   const maxChanges = parseInt(document.getElementById('opt-max-changes')?.value || '8', 10);
-  const timeBudgetMs = 150000; // 2.5 minutes for GA search
+  const timeBudgetMs = 240000; // 4 minutes for GA search
 
   if (btn) {
     btn.disabled = true;
-    btn.innerHTML = '<i data-lucide="loader" style="width:14px; height:14px; animation:spin 1s infinite linear;"></i> Optimizing (2-3 min)...';
+    btn.innerHTML = '<i data-lucide="loader" style="width:14px; height:14px; animation:spin 1s infinite linear;"></i> Optimizing (4 min)...';
   }
   if (rescanBtn) rescanBtn.disabled = true;
 
@@ -1948,6 +1998,7 @@ async function runBatchOptimizer(forceRefresh = false) {
       maxChanges: String(maxChanges),
       timeBudgetMs: String(timeBudgetMs),
       populationSize: '40',
+      searchMode: 'ga',
       force: forceRefresh ? 'true' : 'false',
     });
     const url = `/api/optimize/progress?${params.toString()}`;
@@ -2062,6 +2113,185 @@ function processOptimizerResult(payload, maxChanges) {
   if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="play" style="width:14px; height:14px;"></i> Run Optimizer'; }
   if (rescanBtn) rescanBtn.disabled = false;
   if (window.lucide) window.lucide.createIcons();
+}
+
+/**
+ * Run the deep (overnight) optimizer — multi-hour GA search for maximum quality.
+ */
+async function runDeepOptimizer() {
+  const btn = document.getElementById('btn-overnight-optimizer');
+  const runBtn = document.getElementById('btn-run-optimizer');
+  const rescanBtn = document.getElementById('btn-rescan-reopt');
+  const maxChanges = parseInt(document.getElementById('opt-max-changes')?.value || '8', 10);
+  const timeBudgetMs = 14400000; // 4 hours
+
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<i data-lucide="loader" style="width:14px; height:14px; animation:spin 1s infinite linear;"></i> Overnight (4h)...';
+  }
+  if (runBtn) runBtn.disabled = true;
+  if (rescanBtn) rescanBtn.disabled = true;
+
+  setWorkflowStep('analyze', 'active');
+
+  return new Promise((resolve, reject) => {
+    const params = new URLSearchParams({
+      maxChanges: String(maxChanges),
+      timeBudgetMs: String(timeBudgetMs),
+      populationSize: '100',
+      searchMode: 'deep',
+      force: 'false',
+    });
+    const url = `/api/optimize/progress?${params.toString()}`;
+
+    showGaProgress();
+    clearGaLog();
+    addGaLogEntry('\u{1F680} Starting DEEP overnight optimization (4 hour search)...', 'info');
+    addGaLogEntry('Population: 100 \u00B7 Search mode: multi-phase deep GA', 'info');
+    addGaLogEntry('The server will explore billions of channel combinations.', 'info');
+
+    let payload = null;
+    const es = new EventSource(url);
+
+    es.addEventListener('connected', (e) => {
+      const data = JSON.parse(e.data);
+      addGaLogEntry(`Connected. ${data.totalAPs} APs, ${data.totalRadios} radios.`, 'info');
+    });
+
+    es.addEventListener('progress', (e) => {
+      const p = JSON.parse(e.data);
+      updateGaProgressUI(p);
+    });
+
+    es.addEventListener('complete', (e) => {
+      payload = JSON.parse(e.data);
+      es.close();
+      hideGaProgress();
+
+      if (!payload.success) {
+        setWorkflowStep('analyze', 'error');
+        updateBatchOptimizerDisplay(true, payload.error || 'Optimization failed');
+        showToast(`Deep optimizer error: ${escapeHtml(payload.error || 'Unknown error')}`, 'error');
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="moon" style="width:14px; height:14px;"></i> Overnight'; }
+        if (runBtn) runBtn.disabled = false;
+        if (rescanBtn) rescanBtn.disabled = false;
+        if (window.lucide) window.lucide.createIcons();
+        reject(new Error(payload.error));
+        return;
+      }
+
+      addGaLogEntry('\u2705 Deep optimization complete!', 'success');
+      processOptimizerResult(payload, maxChanges);
+
+      if (window.lucide) window.lucide.createIcons();
+      resolve();
+    });
+
+    es.addEventListener('error', () => {
+      if (es) es.close();
+      hideGaProgress();
+      const errMsg = payload ? (payload.error || 'Connection lost') : 'SSE connection failed';
+      showToast(`Deep optimizer error: ${escapeHtml(errMsg)}`, 'error');
+      setWorkflowStep('analyze', 'error');
+      updateBatchOptimizerDisplay(true, errMsg);
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="moon" style="width:14px; height:14px;"></i> Overnight'; }
+      if (runBtn) runBtn.disabled = false;
+      if (rescanBtn) rescanBtn.disabled = false;
+      if (window.lucide) window.lucide.createIcons();
+      reject(new Error(errMsg));
+    });
+  });
+}
+
+/**
+ * Show the metric detail modal with before/after breakdown of a delta metric.
+ * @param {string} metricKey - e.g. 'avgCu24', 'avgCu5', 'totalCci'
+ * @param {Object} improvementReport - Full improvement report from optimizer
+ */
+function showMetricDetailModal(metricKey, improvementReport) {
+  const modal = document.getElementById('metric-detail-modal');
+  const title = document.getElementById('metric-detail-title');
+  const body = document.getElementById('metric-detail-body');
+  if (!modal || !title || !body) return;
+
+  const ir = improvementReport;
+  const b = ir.before;
+  const a = ir.after;
+  const d = ir.deltas;
+
+  const metricLabels = {
+    avgCu24: { label: '2.4 GHz Avg Channel Utilization', unit: '%' },
+    avgCu5: { label: '5 GHz Avg Channel Utilization', unit: '%' },
+    maxCu24: { label: '2.4 GHz Max Channel Utilization', unit: '%' },
+    maxCu5: { label: '5 GHz Max Channel Utilization', unit: '%' },
+    totalCci: { label: 'Total Co-Channel Interference', unit: ' peers' },
+    congestedCount: { label: 'Congested Radios', unit: '' },
+    warningCount: { label: 'Warning Radios', unit: '' },
+  };
+
+  const ml = metricLabels[metricKey] || { label: metricKey, unit: '' };
+  title.textContent = ml.label;
+
+  // Compute delta
+  const beforeVal = b[metricKey] != null ? b[metricKey] : 0;
+  const afterVal = a[metricKey] != null ? a[metricKey] : 0;
+  const deltaVal = beforeVal - afterVal;
+  const improved = deltaVal > 0;
+  const worsened = deltaVal < 0;
+
+  const deltaKey = {
+    avgCu24: 'avgCu24Delta',
+    avgCu5: 'avgCu5Delta',
+    maxCu24: 'maxCu24Delta',
+    maxCu5: 'maxCu5Delta',
+    totalCci: 'cciReduction',
+    congestedCount: 'congestedReduction',
+  }[metricKey];
+
+  const deltaStr = deltaKey && d[deltaKey] != null
+    ? (d[deltaKey] > 0 ? `\u2193${d[deltaKey]}` : d[deltaKey] < 0 ? `\u2191${Math.abs(d[deltaKey])}` : '\u2014')
+    : '\u2014';
+
+  body.innerHTML = `
+    <div style="display:flex; gap:20px; justify-content:center; margin:20px 0;">
+      <div style="text-align:center; padding:16px 24px; background:rgba(255,255,255,0.04); border-radius:12px; min-width:120px;">
+        <div style="font-size:0.7rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;">Before</div>
+        <div style="font-size:2rem; font-weight:700; color:#f87171; font-family:monospace;">${beforeVal}${ml.unit}</div>
+      </div>
+      <div style="display:flex; align-items:center;">
+        <i data-lucide="arrow-right" style="width:24px; height:24px; color:${improved ? 'var(--color-success)' : worsened ? 'var(--color-danger)' : '#94a3b8'};"></i>
+      </div>
+      <div style="text-align:center; padding:16px 24px; background:rgba(255,255,255,0.04); border-radius:12px; min-width:120px;">
+        <div style="font-size:0.7rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;">After (est.)</div>
+        <div style="font-size:2rem; font-weight:700; color:${improved ? '#34d399' : worsened ? '#f87171' : '#e2e8f0'}; font-family:monospace;">${afterVal}${ml.unit}</div>
+      </div>
+    </div>
+    <div style="text-align:center; margin-bottom:16px;">
+      <span style="font-size:1.1rem; font-weight:600; color:${improved ? '#34d399' : worsened ? '#f87171' : '#94a3b8'};">
+        ${improved ? '\u2193 Improvement' : worsened ? '\u2191 Degradation' : 'No change'}: ${deltaStr}${ml.unit}
+      </span>
+    </div>
+    <div style="background:rgba(0,0,0,0.15); border-radius:8px; padding:12px; font-size:0.82rem; color:#94a3b8; line-height:1.6;">
+      <strong style="color:#e2e8f0;">What this means:</strong><br>
+      ${metricKey === 'avgCu24' || metricKey === 'avgCu5'
+        ? 'Channel Utilization measures how busy the radio channel is. Lower is better \u2014 more airtime available for clients.'
+        : metricKey === 'totalCci'
+        ? 'Co-Channel Interference counts how many other APs are operating on the same channel. Fewer = less contention.'
+        : metricKey === 'congestedCount'
+        ? 'Radios with CU > 75% or CCI > 12 peers. These are the problem children the optimizer targets first.'
+        : metricKey === 'warningCount'
+        ? 'Radios with CU > 50% or CCI > 4 peers. These may become problematic as load increases.'
+        : 'This metric affects overall network quality.'}
+    </div>
+    ${window.lucide ? '<script>if(window.lucide) window.lucide.createIcons()</script>' : ''}
+  `;
+
+  modal.style.display = 'flex';
+}
+
+function closeMetricDetailModal() {
+  const modal = document.getElementById('metric-detail-modal');
+  if (modal) modal.style.display = 'none';
 }
 
 /**
@@ -2296,6 +2526,35 @@ function updateBatchOptimizerDisplay(isError = false, errorMsg = '') {
       </div>
     </div>
   `;
+
+  // Attach click delegation for delta metric cards
+  const deltaRow = content.querySelector('.opt-delta-row');
+  if (deltaRow && optimizerData && optimizerData.improvementReport) {
+    // Remove old listener to avoid duplicates
+    deltaRow._deltaClickHandler && deltaRow.removeEventListener('click', deltaRow._deltaClickHandler);
+    const handler = (e) => {
+      const card = e.target.closest('.opt-delta-card');
+      if (!card) return;
+      const labelEl = card.querySelector('.opt-delta-label');
+      if (!labelEl) return;
+      const label = labelEl.textContent.trim();
+      const ir = optimizerData.improvementReport;
+      const metricMap = {
+        '2.4 GHz Avg CU': 'avgCu24',
+        '5 GHz Avg CU': 'avgCu5',
+        'Co-Channel Interference': 'totalCci',
+        'Est. Improvement': 'estimatedImprovementPct',
+      };
+      const key = metricMap[label];
+      if (key === 'estimatedImprovementPct') {
+        showMetricDetailModal('congestedCount', ir);
+      } else if (key) {
+        showMetricDetailModal(key, ir);
+      }
+    };
+    deltaRow.addEventListener('click', handler);
+    deltaRow._deltaClickHandler = handler;
+  }
 
   if (window.lucide) window.lucide.createIcons();
 }

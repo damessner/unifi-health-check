@@ -107,6 +107,45 @@
 .ga-log-entry.info { color: #60a5fa; }
 .ga-log-entry.success { color: #34d399; }
 .ga-log-entry.error { color: #f87171; }
+.btn-batch-overnight {
+  background: linear-gradient(135deg, #312e81, #4338ca, #6366f1);
+  color: white;
+  border: 1px solid rgba(99, 102, 241, 0.4);
+  padding: 7px 14px;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  position: relative;
+  overflow: hidden;
+}
+.btn-batch-overnight::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+  animation: shimmer 3s infinite;
+}
+@keyframes shimmer {
+  0% { left: -100%; }
+  100% { left: 100%; }
+}
+.btn-batch-overnight:hover { 
+  transform: translateY(-1px);
+  box-shadow: 0 4px 20px rgba(99, 102, 241, 0.3);
+}
+.btn-batch-overnight:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
   </style>
 </head>
 <body>
@@ -965,6 +1004,9 @@
               <button class="btn-batch-primary" id="btn-run-optimizer">
                 <i data-lucide="play" style="width:14px; height:14px;"></i> Run Optimizer
               </button>
+              <button class="btn-batch-overnight" id="btn-overnight-optimizer" title="Run deep search for up to 4 hours to find the best possible channel plan">
+                <i data-lucide="moon" style="width:14px; height:14px;"></i> Overnight
+              </button>
               <button class="btn-batch-secondary" id="btn-rescan-reopt" style="display:none;">
                 <i data-lucide="refresh-cw" style="width:14px; height:14px;"></i> Re-scan &amp; Re-optimize
               </button>
@@ -1023,6 +1065,34 @@
                 <span class="ga-metric-label">Elapsed</span>
                 <span class="ga-metric-value" id="ga-elapsed">0s</span>
               </div>
+            </div>
+              <div class="ga-metric">
+                <span class="ga-metric-label">Diversity</span>
+                <span class="ga-metric-value" id="ga-diversity">—</span>
+              </div>
+              <div class="ga-metric">
+                <span class="ga-metric-label">Mean Pain</span>
+                <span class="ga-metric-value" id="ga-mean-pain">—</span>
+              </div>
+            </div>
+            <!-- Population health range bar -->
+            <div id="ga-health-range" class="ga-health-range" style="display:none; margin-bottom:10px;">
+              <div class="ga-health-labels">
+                <span class="ga-health-label">Best <span id="ga-hr-best">—</span></span>
+                <span class="ga-health-label-center" id="ga-hr-label">Population pain range</span>
+                <span class="ga-health-label">Worst <span id="ga-hr-worst">—</span></span>
+              </div>
+              <div class="ga-health-track">
+                <div class="ga-health-bar" id="ga-health-bar" style="width:100%; margin-left:0%;"></div>
+              </div>
+            </div>
+            <!-- Best plan so far preview (shows during live search) -->
+            <div id="ga-best-preview" class="ga-best-preview" style="display:none; margin-bottom:10px;">
+              <div class="ga-best-preview-header">
+                <i data-lucide="zap" style="width:12px;height:12px;display:inline-block;vertical-align:middle;margin-right:4px;"></i>
+                Best plan so far: <strong id="ga-preview-count">0</strong> AP changes · ~<strong id="ga-preview-improvement">0</strong>% estimated improvement
+              </div>
+              <div class="ga-preview-chips" id="ga-preview-chips"></div>
             </div>
             <div class="ga-progress-log" id="ga-log">
               <div class="ga-log-entry info">GA optimizer will search all channel combinations across all APs. Results stream in real time.</div>
@@ -1180,6 +1250,22 @@
       <div class="modal-footer">
         <button type="button" id="btn-cancel-confirm" class="btn-cancel">Cancel</button>
         <button type="button" class="btn-submit" id="confirm-modal-ok">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Metric Detail Modal (used by optimizer delta card drill-down) -->
+  <div class="modal-overlay" id="metric-detail-modal" style="display: none;">
+    <div class="modal-card" style="max-width:600px;">
+      <div class="modal-header">
+        <h3><i data-lucide="bar-chart-2" style="width: 20px; height: 20px; color: var(--primary);"></i> <span id="metric-detail-title">Metric Detail</span></h3>
+        <button id="btn-close-metric-modal" class="btn-close-modal">&times;</button>
+      </div>
+      <div class="modal-body" id="metric-detail-body">
+        <p class="modal-instruction">Loading...</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="btn-close-metric" class="btn-cancel">Close</button>
       </div>
     </div>
   </div>

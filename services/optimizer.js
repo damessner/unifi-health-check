@@ -800,13 +800,14 @@ function runConstrainedOptimizerSingle(radios, channelSummary, aps, options = {}
  */
 async function runGeneticOptimizer(radios, channelSummary, aps, options = {}, onProgress) {
   const maxChanges = options.maxChanges ?? DEFAULT_MAX_CHANGES;
-  const timeBudgetMs = clampInt(Number(options.timeBudgetMs), 1000, 300000, 150000);
+  const timeBudgetMs = clampInt(Number(options.timeBudgetMs), 1000, 28800000, 150000);
   const populationSize = clampInt(Number(options.populationSize), 10, 200, GA_POPULATION_SIZE);
   const mutationRate = Number(options.mutationRate) || GA_MUTATION_RATE;
   const eliteCount = Math.min(clampInt(Number(options.eliteCount), 1, 50, GA_ELITE_COUNT), Math.floor(populationSize / 4));
   const stagnationLimit = clampInt(Number(options.stagnationLimit), 10, 5000, GA_STAGNATION_LIMIT);
   const convergenceWindow = clampInt(Number(options.convergenceWindow), 20, 2000, 300);
   const convergenceThreshold = Number(options.convergenceThreshold) || 0.5;
+  const searchMode = String(options.searchMode || 'ga').toLowerCase();
 
   const allAPs = Array.isArray(aps) ? aps : [];
   const proximityGraph = buildProximityGraph(allAPs);
@@ -1001,7 +1002,11 @@ async function runGeneticOptimizer(radios, channelSummary, aps, options = {}, on
       const newest = bestHistory[bestHistory.length - 1];
       const improvement = Math.abs(oldest - newest);
       const pctImprovement = oldest > 0 ? (improvement / oldest) * 100 : 0;
-      if (pctImprovement < convergenceThreshold && (Date.now() - started) > timeBudgetMs * 0.4) {
+      // Deep mode: more lenient convergence — only stop if truly stuck for a very long window
+      const convergeFrac = searchMode === 'deep' ? 0.85 : 0.4;
+      const convergeWindowMul = searchMode === 'deep' ? 3 : 1;
+      if (pctImprovement < convergenceThreshold * convergeWindowMul && 
+          (Date.now() - started) > timeBudgetMs * convergeFrac) {
         convergedEarly = true;
         // Break out to move to refinement phase
         break;
@@ -1020,14 +1025,33 @@ async function runGeneticOptimizer(radios, channelSummary, aps, options = {}, on
     // If we didn't converge early, still try refinement in remaining time
     await sendProgress('refining');
   }
-  const refined = refineAssignment(bestAssignment, radios, channelSummary, maxChanges, proximityGraph);
-  const refinedEval = evaluateAssignment(radios, refined, channelSummary, maxChanges);
+  // Single refinement pass (all modes)
+  let refined = refineAssignment(bestAssignment, radios, channelSummary, maxChanges, proximityGraph);
+  let refinedEval = evaluateAssignment(radios, refined, channelSummary, maxChanges);
   let refinementAccepted = false;
+  let refinementPasses = 1;
   if (refinedEval.pain < bestEval.pain) {
     bestAssignment = refined;
     bestEval = refinedEval;
     bestGeneration = generations + 1; // refinement counts as an extra gen
     refinementAccepted = true;
+  }
+
+  // Deep mode: multiple refinement passes with increasing aggressiveness
+  if (searchMode === 'deep') {
+    for (let pass = 0; pass < 5; pass++) {
+      // Each pass uses the current best as starting point
+      refined = refineAssignment(bestAssignment, radios, channelSummary, maxChanges, proximityGraph);
+      refinedEval = evaluateAssignment(radios, refined, channelSummary, maxChanges);
+      if (refinedEval.pain < bestEval.pain) {
+        bestAssignment = refined;
+        bestEval = refinedEval;
+        bestGeneration = generations + 1 + pass;
+        refinementAccepted = true;
+        refinementPasses++;
+      }
+      await sendProgress(`Refining pass ${pass + 2}...`);
+    }
   }
 
   await sendProgress('finalizing');
@@ -1037,6 +1061,7 @@ async function runGeneticOptimizer(radios, channelSummary, aps, options = {}, on
 
   result.searchMeta = {
     mode: 'ga',
+    searchMode: searchMode,
     populationSize,
     timeBudgetMs,
     generationsTried: generations,
@@ -1045,6 +1070,7 @@ async function runGeneticOptimizer(radios, channelSummary, aps, options = {}, on
     stagnationResets: stagnationCounter,
     convergedEarly,
     refinementApplied: refinementAccepted,
+    refinementPasses: refinementPasses,
     objectiveScore: Math.round(bestEval.pain * 100) / 100,
     bestImprovementPct: bestEval.improvementPct,
   };
