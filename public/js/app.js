@@ -2652,18 +2652,22 @@ async function exportXlsx() {
 
   try {
     showToast('Generating XLSX optimization report. Please wait...', 'info');
-    const res = await fetch('/api/export/xlsx');
+
+    // Match the dashboard's current optimizer settings
+    const maxChanges = document.getElementById('opt-max-changes')?.value || '8';
+
+    const res = await fetch(`/api/export/xlsx?maxChanges=${maxChanges}`);
     if (!res.ok) throw new Error(`HTTP status error: ${res.status}`);
     
     const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
+    const blobUrl = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.href = url;
+    link.href = blobUrl;
     
     const ts = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
     link.download = `unifi_optimization_${ts}.xlsx`;
     link.click();
-    URL.revokeObjectURL(url);
+    URL.revokeObjectURL(blobUrl);
     showToast('XLSX report downloaded successfully!', 'success');
   } catch (err) {
     console.error('[Export] Failed to export XLSX:', err);
