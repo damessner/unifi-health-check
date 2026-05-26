@@ -1723,6 +1723,12 @@ function saveOptimizerState() {
   } catch (e) { /* quota exceeded, ignore */ }
 }
 
+/**
+ * Build a deterministic signature of an optimizer batch plan.
+ * Used to detect repeated identical recommendations across reruns.
+ * @param {Array} changedAPs
+ * @returns {string}
+ */
 function buildOptimizerPlanSignature(changedAPs = []) {
   if (!Array.isArray(changedAPs) || changedAPs.length === 0) return '';
   return changedAPs
@@ -1758,7 +1764,7 @@ async function runBatchOptimizer(forceRefresh = true) {
 
     const planSignature = buildOptimizerPlanSignature(payload.changedAPs);
     const lastRound = optimizerHistory[optimizerHistory.length - 1];
-    if (lastRound && lastRound.planSignature === planSignature && payload.changedAPs.length > 0) {
+    if (planSignature && lastRound && lastRound.planSignature === planSignature) {
       optimizerData = payload;
       console.log('[Optimizer] Duplicate batch detected, suppressing round increment.');
       updateBatchOptimizerDisplay();
