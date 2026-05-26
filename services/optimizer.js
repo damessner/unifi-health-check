@@ -26,10 +26,8 @@
 // ── Valid channels ────────────────────────────────────────────────────────────
 const CHANNELS_24 = [1, 6, 11];
 
-// Only non-DFS channels: UNII-1 (36-48) + UNII-3 (149-165).
-// DFS channels (52-144) are excluded because iPads and many other client
-// devices cannot connect to them, making any AP placed on a DFS channel
-// effectively invisible to a large portion of the network's clients.
+// iPad-safe non-DFS channels: UNII-1 (36-48) + UNII-3 (149-165).
+// DFS channels (52-144) are excluded to maximize compatibility.
 const CHANNELS_5 = [36, 40, 44, 48, 149, 153, 157, 161, 165];
 
 // ── Scoring weights ───────────────────────────────────────────────────────────
@@ -88,6 +86,37 @@ function inferFloor(name = '', index = 0) {
     if (num === 0) return 'EG';
     if (num === 1) return '1OG';
     if (num === 2) return '2OG';
+  }
+
+  function collectObservedChannels(radios, channelCounts, is24Band) {
+    const observed = new Set();
+
+    (Array.isArray(radios) ? radios : []).forEach((r) => {
+      const is24 = r.band === '2.4GHz' || r.radio === 'ng';
+      if (is24 !== is24Band) return;
+      const ch = Number(r.channel);
+      if (Number.isFinite(ch)) observed.add(ch);
+    });
+
+    Object.keys(channelCounts || {}).forEach((ch) => {
+      const n = Number(ch);
+      if (Number.isFinite(n)) observed.add(n);
+    });
+
+    return observed;
+  }
+
+  function resolveChannelPools(radios, channelSummary) {
+    const observed24 = collectObservedChannels(radios, channelSummary && channelSummary.channelCounts24, true);
+    const observed5 = collectObservedChannels(radios, channelSummary && channelSummary.channelCounts5, false);
+
+    const channels24 = CHANNELS_24.filter((ch) => observed24.has(ch));
+    const channels5 = CHANNELS_5.filter((ch) => observed5.has(ch));
+
+    return {
+      channels24: channels24.length > 0 ? channels24 : [...CHANNELS_24],
+      channels5: channels5.length > 0 ? channels5 : [...CHANNELS_5],
+    };
   }
   return ['EG', '1OG', '2OG'][index % 3];
 }
@@ -282,6 +311,7 @@ function scoreCombo(ap, ch24, ch5, vLoad24, vLoad5, proximityGraph, floorAssignm
 function runConstrainedOptimizer(radios, channelSummary, aps, options = {}) {
   const maxChanges = options.maxChanges || DEFAULT_MAX_CHANGES;
   const minImprovementThreshold = options.minImprovementThreshold || MIN_IMPROVEMENT_THRESHOLD;
+  const channelPools = resolveChannelPools(radios, channelSummary);
 
   // FIX 5: No module-level global — allAPs passed explicitly through every function
   const allAPs = Array.isArray(aps) ? aps : [];
@@ -381,8 +411,8 @@ function runConstrainedOptimizer(radios, channelSummary, aps, options = {}) {
 
     if (!r24 && !r5) return;
 
-    const valid24 = r24 ? CHANNELS_24 : [null];
-    const valid5 = r5 ? CHANNELS_5 : [null];
+    const valid24 = r24 ? channelPools.channels24 : [null];
+    const valid5 = r5 ? channelPools.channels5 : [null];
 
     let bestCombo = null;
     let bestScore = Infinity;
@@ -574,6 +604,12 @@ function runConstrainedOptimizer(radios, channelSummary, aps, options = {}) {
         : 'No beneficial changes found within the current budget. All APs are optimally configured.',
     },
     improvementReport,
+    channelPolicy: {
+      onlyObservedChannels: true,
+      ipadSafeOnly5GHz: true,
+      channels24: channelPools.channels24,
+      channels5: channelPools.channels5,
+    },
     proximityGraph,
   };
 }

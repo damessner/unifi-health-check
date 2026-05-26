@@ -368,7 +368,7 @@ function buildClientSheet(wb, clients) {
 
 // ── Summary Sheet ─────────────────────────────────────────────────────────────
 
-function buildSummarySheet(wb, channelSummary, clientSummary, batchSummary, improvementReport) {
+function buildSummarySheet(wb, channelSummary, clientSummary, batchSummary, improvementReport, channelPolicy) {
   const ws = wb.addWorksheet('Summary');
 
   ws.mergeCells('A1:B1');
@@ -405,6 +405,12 @@ function buildSummarySheet(wb, channelSummary, clientSummary, batchSummary, impr
     ['Warning Clients',  clientSummary.warningCount],
     ['Healthy Clients',  clientSummary.healthyCount],
     ['Health Index',    `${clientSummary.healthIndex}%`],
+    [null, null],
+    ['── Optimizer Channel Policy ──', ''],
+    ['5GHz mode', channelPolicy && channelPolicy.ipadSafeOnly5GHz ? 'iPad-safe non-DFS only' : 'default'],
+    ['Observed-only channels', channelPolicy && channelPolicy.onlyObservedChannels ? 'Yes' : 'No'],
+    ['2.4GHz Candidate Pool', channelPolicy && Array.isArray(channelPolicy.channels24) ? channelPolicy.channels24.join(', ') : '1, 6, 11'],
+    ['5GHz Candidate Pool', channelPolicy && Array.isArray(channelPolicy.channels5) ? channelPolicy.channels5.join(', ') : '36, 40, 44, 48, 149, 153, 157, 161, 165'],
     [null, null],
     ['2.4GHz Channel Distribution', ''],
     ['  CH-1',  ch24['1'] || 0],
@@ -452,7 +458,7 @@ async function generateXlsx(diagnosticsData, options = {}) {
 
   // Run the constrained batch optimizer
   const result = runConstrainedOptimizer(radios, channelSummary, aps, options);
-  const { plan, changedAPs, batchSummary, improvementReport } = result;
+  const { plan, changedAPs, batchSummary, improvementReport, channelPolicy } = result;
 
   // Flatten all radios into the "active" list the sheet builder expects
   const activeRadios = radios.filter(r => r.channel);
@@ -463,7 +469,7 @@ async function generateXlsx(diagnosticsData, options = {}) {
 
   buildChannelSheet(wb, activeRadios, plan, changedAPs, batchSummary, improvementReport);
   buildClientSheet(wb, clients);
-  buildSummarySheet(wb, channelSummary, clientSummary, batchSummary, improvementReport);
+  buildSummarySheet(wb, channelSummary, clientSummary, batchSummary, improvementReport, channelPolicy);
   buildImprovementSheet(wb, improvementReport, batchSummary);
 
   // Stream to buffer
