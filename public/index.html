@@ -1160,6 +1160,21 @@
             </div>
             <div id="opt-history-list" style="display:none; margin-top:10px;"></div>
           </div>
+
+          <!-- Optimization Jobs Panel -->
+          <div class="card-body" id="optimizer-jobs-panel" style="border-top:1px solid var(--border-glass);">
+            <div class="opt-history-header" id="optimizer-jobs-header" style="cursor:pointer;">
+              <div style="display:flex; align-items:center; gap:6px;">
+                <i data-lucide="server" style="width:14px; height:14px; color:var(--text-muted);"></i>
+                <span class="text-muted" style="font-size:0.8rem;">Background Jobs</span>
+                <span class="count-badge bg-purple-alpha" id="optimizer-jobs-count" style="font-size:0.65rem; padding:2px 6px;">0</span>
+              </div>
+              <i data-lucide="chevron-down" id="optimizer-jobs-chevron" style="width:14px; height:14px; color:var(--text-muted); transition:transform 0.2s;"></i>
+            </div>
+            <div id="optimizer-jobs-list" style="display:none; margin-top:10px;">
+              <div class="text-muted" style="font-size:0.75rem; text-align:center; padding:12px;">No optimization jobs yet.</div>
+            </div>
+          </div>
         </div>
 
         <!-- Tailored Optimal Network Channel Grid Plan -->

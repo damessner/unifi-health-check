@@ -155,6 +155,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // Load Initial Data
   fetchData();
 
+  // Load background optimization jobs list
+  setTimeout(loadOptimizerJobs, 500);
+
   // ── Event listeners (replaces all inline onclick/onchange/oninput/onsubmit) ──
 
   // Navigation tabs — delegate via data-tab attribute
@@ -236,6 +239,10 @@ document.addEventListener('DOMContentLoaded', () => {
   // Batch history toggle header
   const elHistoryHeader = document.getElementById('opt-history-header');
   if (elHistoryHeader) elHistoryHeader.addEventListener('click', toggleBatchHistory);
+
+  // Optimization jobs toggle header
+  const elJobsHeader = document.getElementById('optimizer-jobs-header');
+  if (elJobsHeader) elJobsHeader.addEventListener('click', toggleOptimizerJobs);
 
   // Blueprint action buttons
   const elSelectBatch = document.getElementById('btn-select-batch');
@@ -1879,6 +1886,123 @@ function saveOptimizerState() {
   } catch (e) { /* quota exceeded, ignore */ }
 }
 
+// ── Background Jobs Panel ─────────────────────────────────────────
+
+/** Active EventSource connections for running job reconnections. */
+let optimizerJobSSEs = [];
+
+/**
+ * Fetch the list of recent optimizer jobs from the server
+ * and update the Background Jobs panel.
+ */
+async function loadOptimizerJobs() {
+  try {
+    const resp = await fetch('/api/optimize/jobs?limit=20');
+    const data = await resp.json();
+    if (data.success && Array.isArray(data.jobs)) {
+      renderOptimizerJobs(data.jobs);
+      reconnectToRunningJobs(data.jobs);
+    }
+  } catch (e) {
+    console.error('[Jobs] Failed to load:', e.message);
+  }
+}
+
+/**
+ * Render the jobs list into the #optimizer-jobs-list container.
+ */
+function renderOptimizerJobs(jobs) {
+  const list = document.getElementById('optimizer-jobs-list');
+  const countEl = document.getElementById('optimizer-jobs-count');
+  if (!list) return;
+
+  if (!jobs || jobs.length === 0) {
+    list.innerHTML = '<div class="text-muted" style="font-size:0.75rem;text-align:center;padding:12px;">No optimization jobs yet.</div>';
+    if (countEl) countEl.textContent = '0';
+    return;
+  }
+
+  if (countEl) countEl.textContent = jobs.length;
+
+  list.innerHTML = jobs.map(job => {
+    const date = new Date(job.createdAt).toLocaleString();
+    const statusBadge = job.status === 'completed' ? '<span class="badge badge-ok">Done</span>'
+      : job.status === 'running' ? '<span class="badge badge-warn">Running</span>'
+      : job.status === 'queued' ? '<span class="badge badge-warn">Queued</span>'
+      : `<span class="badge badge-error">${escapeHtml(job.status)}</span>`;
+
+    const engine = (job.params && job.params.searchMode) || '?';
+    const engineLabel = engine === 'ga' ? 'GA' : engine === 'deep' ? 'Deep' : engine === 'rust' ? 'Rust' : engine;
+    const changes = (job.result && job.result.changedAPs && job.result.changedAPs.length) || '—';
+
+    const downloadLinks = job.status === 'completed' ? `
+      <a href="/api/optimize/jobs/${job.id}/download/json" class="btn-sm-link" target="_blank" download>JSON</a>
+      <a href="/api/optimize/jobs/${job.id}/download/xlsx" class="btn-sm-link" target="_blank" download>XLSX</a>
+    ` : '';
+
+    const imp = (job.result && job.result.improvementReport && job.result.improvementReport.estimatedImprovementPct)
+      ? `~${job.result.improvementReport.estimatedImprovementPct}%`
+      : '';
+
+    const durSec = job.completedAt ? Math.max(1, Math.round((job.completedAt - job.createdAt) / 1000)) + 's' : '';
+
+    return `
+      <div class="job-card" data-job-id="${job.id}">
+        <div class="job-card-row">
+          <span class="job-status">${statusBadge}</span>
+          <span class="job-meta">
+            ${escapeHtml(engineLabel)}
+            <span class="text-muted" style="font-size:0.65rem;margin-left:4px;">${escapeHtml(date)}</span>
+          </span>
+          <span class="job-changes-count">${changes} APs</span>
+          <span class="job-imp">${imp}</span>
+          <span class="job-dur">${durSec}</span>
+          <span class="job-links">${downloadLinks}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+/**
+ * Open SSE reconnect for any currently running/queued jobs.
+ * This allows progress to be displayed even after page refresh.
+ */
+function reconnectToRunningJobs(jobs) {
+  // Tear down old connections
+  optimizerJobSSEs.forEach(es => es.close());
+  optimizerJobSSEs = [];
+
+  const running = (jobs || []).filter(j => j.status === 'running' || j.status === 'queued');
+  for (const job of running) {
+    const es = new EventSource(`/api/optimize/jobs/${job.id}/progress`);
+
+    es.addEventListener('progress', () => {
+      // Progress event — just refresh the list periodically to show updated counts
+    });
+
+    es.addEventListener('complete', (e) => {
+      es.close();
+      loadOptimizerJobs(); // Refresh to show completed state + download links
+    });
+
+    es.addEventListener('error', () => {
+      es.close();
+    });
+
+    optimizerJobSSEs.push(es);
+  }
+}
+
+/**
+ * Save the latest job ID to localStorage so we can reconnect after refresh.
+ */
+function saveLastJobId(jobId) {
+  if (jobId) {
+    try { localStorage.setItem('unifi_last_optimizer_job', jobId); } catch (_) {}
+  }
+}
+
 // ── GA Search Progress UI ────────────────────────────────────────────────────
 
 let gaEventSource = null;
@@ -2062,6 +2186,8 @@ async function runBatchOptimizer(forceRefresh = false) {
 
     gaEventSource.addEventListener('connected', (e) => {
       const data = JSON.parse(e.data);
+      // Save jobId for reconnection after page refresh
+      if (data.jobId) saveLastJobId(data.jobId);
       addGaLogEntry(`Connected. ${data.totalAPs} APs, ${data.totalRadios} radios, pop ${data.populationSize}.`, 'info');
       addGaLogEntry(`Engine=${searchMode}, genLimit=${data.generationLimit || profile.generationLimit}, minImp=${data.minImprovementThreshold || profile.minImprovement}%`, 'info');
       addGaLogEntry('Searching all channel combinations...', 'info');
@@ -2166,6 +2292,9 @@ function processOptimizerResult(payload, maxChanges) {
   if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="play" style="width:14px; height:14px;"></i> Run Optimizer'; }
   if (rescanBtn) rescanBtn.disabled = false;
   if (window.lucide) window.lucide.createIcons();
+
+  // Refresh background jobs panel
+  loadOptimizerJobs();
 }
 
 /**
@@ -2699,6 +2828,19 @@ function toggleBatchHistory() {
   list.style.display = batchHistoryVisible ? 'block' : 'none';
   if (chevron) {
     chevron.style.transform = batchHistoryVisible ? 'rotate(180deg)' : 'rotate(0deg)';
+  }
+}
+
+let optimizerJobsVisible = false;
+
+function toggleOptimizerJobs() {
+  const list = document.getElementById('optimizer-jobs-list');
+  const chevron = document.getElementById('optimizer-jobs-chevron');
+  if (!list) return;
+  optimizerJobsVisible = !optimizerJobsVisible;
+  list.style.display = optimizerJobsVisible ? 'block' : 'none';
+  if (chevron) {
+    chevron.style.transform = optimizerJobsVisible ? 'rotate(180deg)' : 'rotate(0deg)';
   }
 }
 

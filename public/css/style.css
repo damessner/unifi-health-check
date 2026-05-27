@@ -1928,6 +1928,103 @@ body {
   text-overflow: ellipsis;
 }
 
+/* ── Background Jobs Panel ─────────────────────────────────────── */
+.job-card {
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.job-card:last-child {
+  border-bottom: none;
+}
+.job-card-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.72rem;
+}
+.job-status {
+  flex: 0 0 auto;
+}
+.job-meta {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.job-changes-count {
+  flex: 0 0 40px;
+  text-align: center;
+  font-weight: 600;
+  color: var(--primary-light);
+}
+.job-imp {
+  flex: 0 0 50px;
+  text-align: right;
+  color: #6EE7B7;
+  font-weight: 500;
+}
+.job-dur {
+  flex: 0 0 40px;
+  text-align: right;
+  color: var(--text-muted);
+  font-size: 0.65rem;
+}
+.job-links {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+}
+.btn-sm-link {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-decoration: none;
+  color: var(--primary-light);
+  background: rgba(99,102,241,0.1);
+  border: 1px solid rgba(99,102,241,0.2);
+  transition: all 0.15s;
+}
+.btn-sm-link:hover {
+  background: rgba(99,102,241,0.2);
+  border-color: var(--primary-light);
+}
+.badge-ok {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  background: rgba(52,211,153,0.15);
+  color: #6EE7B7;
+}
+.badge-warn {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  background: rgba(251,191,36,0.15);
+  color: #FCD34D;
+}
+.badge-error {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  background: rgba(239,68,68,0.15);
+  color: #FCA5A5;
+}
+
 @media (max-width: 768px) {
   .opt-delta-row {
     grid-template-columns: repeat(2, 1fr);

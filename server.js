@@ -7,6 +7,7 @@ const unifiClient = require('./services/unifiClient');
 const analyzer = require('./services/analyzer');
 const xlsxExporter = require('./services/xlsxExporter');
 const optimizer = require('./services/optimizer');
+const optimizerManager = require('./services/optimizerManager');
 
 const app = express();
 const PORT = config.server.port;
@@ -408,6 +409,153 @@ app.get('/api/optimize', async (req, res) => {
   }
 });
 
+// ── Optimizer engine runners (used by POST /api/optimize/run in background) ──
+
+/**
+ * Run the JS GA engine in background for a given job.
+ * Stores progress via optimizerManager and completes the job on finish.
+ */
+async function runJSEngine(jobId, params, deps) {
+  const { maxChanges, timeBudgetMs, generationLimit, populationSize,
+          mutationRate, eliteCount, stagnationLimit, convergenceWindow,
+          convergenceThreshold, searchMode, minImprovementThreshold } = params;
+  const { channelAnalysis, apsModel } = deps;
+
+  const result = await optimizer.runGeneticOptimizer(
+    channelAnalysis.radios,
+    channelAnalysis.summary,
+    apsModel,
+    {
+      maxChanges, minImprovementThreshold, enforceMinImprovement: true,
+      timeBudgetMs, generationLimit, populationSize, mutationRate,
+      eliteCount, stagnationLimit, convergenceWindow, convergenceThreshold,
+      searchMode,
+    },
+    (progress) => { optimizerManager.addProgress(jobId, progress); },
+  );
+
+  // Generate and save XLSX
+  let xlsxPath = null;
+  try {
+    const diagData = { channels: channelAnalysis, clients: deps.clientAnalysis, aps: apsModel };
+    const buffer = await xlsxExporter.generateXlsx(diagData, { maxChanges });
+    xlsxPath = path.join(__dirname, 'data', 'optimizer-runs', `${jobId}-report.xlsx`);
+    require('fs').writeFileSync(xlsxPath, buffer);
+  } catch (e) { console.error('[Job] XLSX save error:', e.message); }
+
+  optimizerManager.completeJob(jobId, result, xlsxPath);
+}
+
+/**
+ * Run the Rust GA engine in background for a given job.
+ * Stores progress via optimizerManager and completes the job on finish.
+ */
+async function runRustEngine(jobId, params, deps) {
+  const { maxChanges, timeBudgetMs, generationLimit, populationSize,
+          mutationRate, eliteCount, stagnationLimit, convergenceWindow,
+          convergenceThreshold, minImprovementThreshold } = params;
+  const { channelAnalysis, apsModel } = deps;
+  const rustBin = path.join(__dirname, 'rust-optimizer', 'target', 'release', 'unifi-ga-optimizer.exe');
+
+  const input = {
+    radios: channelAnalysis.radios.filter(r => r.channel != null).map(r => ({
+      apMac: r.apMac, radio: r.radio, channel: r.channel,
+      cu_total: r.cu_total || 0, cci_count: r.cci_count || 0,
+      tx_retries_pct: r.tx_retries_pct || 0, num_sta: r.num_sta || 0,
+      bw: r.bw || null, cu_self_rx: r.cu_self_rx || 0, cu_self_tx: r.cu_self_tx || 0,
+      band: r.band || null, apName: r.apName || r.apMac,
+    })),
+    channel_summary: {
+      channelCounts24: channelAnalysis.summary.channelCounts24 || {},
+      channelCounts5: channelAnalysis.summary.channelCounts5 || {},
+    },
+    max_changes: maxChanges, time_budget_ms: timeBudgetMs,
+    generation_limit: generationLimit, population_size: populationSize,
+    mutation_rate: mutationRate, elite_count: eliteCount,
+    stagnation_limit: stagnationLimit, convergence_window: convergenceWindow,
+    convergence_threshold: convergenceThreshold,
+    min_improvement_threshold: minImprovementThreshold,
+    enforce_min_improvement: true, search_mode: 'rust',
+  };
+
+  const proc = require('child_process').spawn(rustBin, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let completeData = null;
+  let stdoutBuffer = '';
+
+  proc.stdout.on('data', (chunk) => {
+    stdoutBuffer += chunk.toString();
+    const lines = stdoutBuffer.split('\n');
+    stdoutBuffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const msg = JSON.parse(line);
+        if (msg.type === 'progress') {
+          optimizerManager.addProgress(jobId, {
+            phase: 'searching', generation: msg.generation,
+            populationSize, elapsedMs: msg.elapsed_ms,
+            remainingMs: Math.max(0, timeBudgetMs - msg.elapsed_ms),
+            totalBudgetMs: timeBudgetMs,
+            bestPain: msg.best_pain, bestImprovementPct: msg.best_improvement_pct,
+            bestChangesCount: msg.best_changes,
+            diversity: msg.diversity, meanPain: msg.mean_pain,
+            medianPain: msg.median_pain, worstPain: msg.worst_pain,
+            statusText: msg.status_text,
+          });
+        } else if (msg.type === 'complete') {
+          completeData = msg;
+        }
+      } catch (_) { /* skip parse errors */ }
+    }
+  });
+
+  proc.stderr.on('data', (chunk) => console.error('[Rust-Opt]', chunk.toString().trim()));
+
+  await new Promise((resolve, reject) => {
+    proc.on('close', (code) => {
+      if (code !== 0 && !completeData) reject(new Error(`Rust optimizer exited with code ${code}`));
+      else resolve();
+    });
+    proc.on('error', reject);
+    proc.stdin.write(JSON.stringify(input) + '\n');
+    proc.stdin.end();
+  });
+
+  if (!completeData) throw new Error('Rust optimizer produced no result');
+
+  const rustResult = {
+    plan: completeData.plan || {},
+    changedAPs: (completeData.changedAPs || []).map(ap => ({
+      mac: ap.mac, name: ap.name, floor: ap.floor || '—',
+      healthScore: ap.healthScore || 0, changes: ap.changes || '',
+      oldNgCh: ap.oldNgCh, newNgCh: ap.newNgCh,
+      oldNaCh: ap.oldNaCh, newNaCh: ap.newNaCh,
+      cu: ap.cu || 0, cci: ap.cci || 0,
+    })),
+    totalAPs: completeData.totalAPs || channelAnalysis.radios.length,
+    candidatesConsidered: (completeData.changedAPs || []).length,
+    batchSummary: {
+      maxChanges, changesSuggested: (completeData.changedAPs || []).length,
+      remainingWorstAPs: Math.max(0, channelAnalysis.radios.length - (completeData.changedAPs || []).length),
+      recommendation: 'Rust optimizer completed.',
+    },
+    improvementReport: completeData.improvementReport || null,
+    proximityGraph: optimizer.buildProximityGraph(apsModel),
+    searchMeta: completeData.searchMeta || { mode: 'rust' },
+  };
+
+  // Generate and save XLSX
+  let xlsxPath = null;
+  try {
+    const diagData = { channels: channelAnalysis, clients: deps.clientAnalysis, aps: apsModel };
+    const buffer = await xlsxExporter.generateXlsx(diagData, { maxChanges });
+    xlsxPath = path.join(__dirname, 'data', 'optimizer-runs', `${jobId}-report.xlsx`);
+    require('fs').writeFileSync(xlsxPath, buffer);
+  } catch (e) { console.error('[Job] XLSX save error:', e.message); }
+
+  optimizerManager.completeJob(jobId, rustResult, xlsxPath);
+}
+
 /**
  * SSE endpoint: Run the GA optimizer with real-time progress streaming.
  * GET /api/optimize/progress?maxChanges=8&timeBudgetMs=150000&populationSize=40
@@ -466,8 +614,25 @@ app.get('/api/optimize/progress', async (req, res) => {
       res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     };
 
-    // Send initial connected event
+    // ── Create persistent background job ─────────────────────────────────
+    const job = optimizerManager.createJob({
+      maxChanges, minImprovementThreshold, timeBudgetMs, generationLimit,
+      searchMode, populationSize, mutationRate, eliteCount,
+      stagnationLimit, convergenceWindow, convergenceThreshold,
+    });
+    const jobId = job.id;
+
+    // Wrapper that stores progress events in the job manager
+    const sendWrappedEvent = (event, data) => {
+      sendEvent(event, data);
+      if (event === 'progress') {
+        optimizerManager.addProgress(jobId, data);
+      }
+    };
+
+    // Send initial connected event (includes jobId so frontend can reconnect)
     sendEvent('connected', {
+      jobId,
       maxChanges,
       minImprovementThreshold,
       timeBudgetMs,
@@ -481,6 +646,20 @@ app.get('/api/optimize/progress', async (req, res) => {
       totalAPs: apsModel.length,
       totalRadios: channelAnalysis.radios.length,
     });
+
+    // Helper to background-generate and save an XLSX report
+    const saveXlsxForJob = async () => {
+      try {
+        const diagData = { channels: channelAnalysis, clients: clientAnalysis, aps: apsModel };
+        const buffer = await xlsxExporter.generateXlsx(diagData, { maxChanges });
+        const xlsxPath = path.join(__dirname, 'data', 'optimizer-runs', `${jobId}-report.xlsx`);
+        require('fs').writeFileSync(xlsxPath, buffer);
+        return xlsxPath;
+      } catch (e) {
+        console.error('[Job] XLSX save failed:', e.message);
+        return null;
+      }
+    };
 
     if (searchMode === 'rust') {
       // ── Rust native optimizer ─────────────────────────────────────────────
@@ -528,7 +707,7 @@ app.get('/api/optimize/progress', async (req, res) => {
           try {
             const msg = JSON.parse(line);
             if (msg.type === 'progress') {
-              sendEvent('progress', {
+              sendWrappedEvent('progress', {
                 phase: 'searching',
                 generation: msg.generation,
                 populationSize: populationSize,
@@ -593,7 +772,10 @@ app.get('/api/optimize/progress', async (req, res) => {
         searchMeta: completeData.searchMeta || { mode: 'rust' },
       };
 
-      sendEvent('complete', { success: true, timestamp: Date.now(), ...rustResult });
+      // Save result to job manager + generate XLSX
+      const xlsxPath = await saveXlsxForJob();
+      optimizerManager.completeJob(jobId, rustResult, xlsxPath);
+      sendEvent('complete', { success: true, timestamp: Date.now(), jobId, ...rustResult });
     } else {
       // ── JavaScript GA optimizer ─────────────────────────────────────────
       const result = await optimizer.runGeneticOptimizer(
@@ -615,13 +797,18 @@ app.get('/api/optimize/progress', async (req, res) => {
           searchMode,
         },
         (progress) => {
-          sendEvent('progress', progress);
+          sendWrappedEvent('progress', progress);
         }
       );
+
+      // Save result to job manager + generate XLSX
+      const xlsxPath = await saveXlsxForJob();
+      optimizerManager.completeJob(jobId, result, xlsxPath);
 
       sendEvent('complete', {
         success: true,
         timestamp: Date.now(),
+        jobId,
         ...result,
       });
     }
@@ -640,6 +827,154 @@ app.get('/api/optimize/progress', async (req, res) => {
       // Client may have disconnected
     }
     console.error('[SSE] Optimizer progress error:', err.message);
+  }
+});
+
+// ── Job management routes ─────────────────────────────────────────
+
+/**
+ * GET /api/optimize/jobs - List recent optimizer jobs.
+ */
+app.get('/api/optimize/jobs', (req, res) => {
+  const limit = Math.min(100, parseInt(req.query.limit, 10) || 50);
+  res.json({ success: true, jobs: optimizerManager.listJobs(limit) });
+});
+
+/**
+ * GET /api/optimize/jobs/:id - Get a single job's details.
+ */
+app.get('/api/optimize/jobs/:id', (req, res) => {
+  const job = optimizerManager.getJob(req.params.id);
+  if (!job) return res.status(404).json({ success: false, error: 'Job not found' });
+  res.json({ success: true, job });
+});
+
+/**
+ * GET /api/optimize/jobs/:id/progress - SSE reconnect endpoint.
+ *
+ * Replays all stored progress events, sends current status,
+ * then stays connected for live updates if still running.
+ * Use this after page refresh to reattach to an active job.
+ */
+app.get('/api/optimize/jobs/:id/progress', (req, res) => {
+  const jobId = req.params.id;
+  const job = optimizerManager.getJob(jobId);
+  if (!job) {
+    return res.status(404).json({ success: false, error: 'Job not found' });
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+
+  optimizerManager.subscribe(jobId, res);
+});
+
+/**
+ * GET /api/optimize/jobs/:id/download/:format
+ *
+ * Download the result of a completed job.
+ * Formats: json, xlsx
+ */
+app.get('/api/optimize/jobs/:id/download/:format', (req, res) => {
+  const jobId = req.params.id;
+  const format = req.params.format;
+  const job = optimizerManager.getJob(jobId);
+
+  if (!job) return res.status(404).json({ success: false, error: 'Job not found' });
+  if (job.status !== 'completed') {
+    return res.status(400).json({ success: false, error: 'Job is not yet completed' });
+  }
+
+  if (format === 'json') {
+    const resultPath = optimizerManager.getResultPath(jobId);
+    if (resultPath && require('fs').existsSync(resultPath)) {
+      return res.download(resultPath, `optimization-${jobId.slice(0, 8)}.json`);
+    }
+    // Fallback: return in-memory result
+    const fullJob = optimizerManager._jobs ? optimizerManager._jobs.get(jobId) : null;
+    if (fullJob && fullJob.result) {
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename="optimization-${jobId.slice(0, 8)}.json"`);
+      return res.json(fullJob.result);
+    }
+    return res.status(404).json({ success: false, error: 'Result file not found' });
+  }
+
+  if (format === 'xlsx') {
+    const xlsxPath = optimizerManager.getXlsxPath(jobId);
+    if (xlsxPath && require('fs').existsSync(xlsxPath)) {
+      return res.download(xlsxPath, `optimization-${jobId.slice(0, 8)}.xlsx`);
+    }
+    return res.status(404).json({ success: false, error: 'XLSX file not found for this job' });
+  }
+
+  res.status(400).json({ success: false, error: `Unsupported format: ${format}` });
+});
+
+/**
+ * POST /api/optimize/run - Create and start a new optimizer job.
+ *
+ * This is the preferred way to start an optimization from the UI.
+ * Returns { jobId } immediately. Connect to /api/optimize/jobs/:id/progress
+ * via SSE for live progress updates.
+ */
+app.post('/api/optimize/run', async (req, res) => {
+  try {
+    const force = req.body?.force === true;
+    const maxChanges = Math.min(100, Math.max(1, parseInt(req.body?.maxChanges, 10) || config.opt.maxChanges));
+    const minImprovementThreshold = Math.min(100, Math.max(0, parseInt(req.body?.minImprovement, 10) || 5));
+    const timeBudgetMs = Math.min(28800000, Math.max(1000, parseInt(req.body?.timeBudgetMs, 10) || 150000));
+    const generationLimit = Math.min(500000, Math.max(100, parseInt(req.body?.generationLimit, 10) || 100000));
+    const searchMode = String(req.body?.searchMode || 'ga').toLowerCase();
+    const populationSize = Math.min(200, Math.max(10, parseInt(req.body?.populationSize, 10) || (searchMode === 'deep' ? 100 : 40)));
+    const mutationRate = Math.min(1, Math.max(0.01, parseFloat(req.body?.mutationRate) || 0.25));
+    const eliteCount = Math.min(50, Math.max(1, parseInt(req.body?.eliteCount, 10) || Math.max(2, Math.floor(populationSize / 10))));
+    const stagnationLimit = Math.min(5000, Math.max(10, parseInt(req.body?.stagnationLimit, 10) || 200));
+    const convergenceWindow = Math.min(2000, Math.max(20, parseInt(req.body?.convergenceWindow, 10) || 300));
+    const convergenceThreshold = Math.min(10, Math.max(0.01, parseFloat(req.body?.convergenceThreshold) || 0.5));
+
+    const job = optimizerManager.createJob({
+      maxChanges, minImprovementThreshold, timeBudgetMs, generationLimit,
+      searchMode, populationSize, mutationRate, eliteCount,
+      stagnationLimit, convergenceWindow, convergenceThreshold,
+    });
+    const jobId = job.id;
+
+    // Respond immediately with job ID
+    res.json({ success: true, jobId });
+
+    // Start execution asynchronously (fire-and-forget)
+    setImmediate(async () => {
+      try {
+        const { devices, clients } = await getFreshData(force);
+        const channelAnalysis = analyzer.analyzeChannels(devices);
+        const clientAnalysis  = analyzer.analyzeClients(clients, devices);
+        const apsModel = buildApsModel(channelAnalysis);
+
+        if (searchMode === 'rust') {
+          await runRustEngine(jobId, {
+            maxChanges, timeBudgetMs, generationLimit, populationSize,
+            mutationRate, eliteCount, stagnationLimit, convergenceWindow,
+            convergenceThreshold, minImprovementThreshold,
+          }, { channelAnalysis, apsModel });
+        } else {
+          await runJSEngine(jobId, {
+            maxChanges, timeBudgetMs, generationLimit, populationSize,
+            mutationRate, eliteCount, stagnationLimit, convergenceWindow,
+            convergenceThreshold, searchMode, minImprovementThreshold,
+          }, { channelAnalysis, clientAnalysis, apsModel });
+        }
+      } catch (err) {
+        optimizerManager.failJob(jobId, err.message);
+        console.error('[Job] background execution error:', err.message);
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
