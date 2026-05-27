@@ -60,6 +60,34 @@ class OptimizerManager {
     return j ? this._sanitize(j) : null;
   }
 
+  /** Check if any running/queued job has the given searchMode. */
+  hasRunningJob(searchMode) {
+    for (const j of this._jobs.values()) {
+      if ((j.status === 'running' || j.status === 'queued') && j.params?.searchMode === searchMode) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Cancel a running/queued job. */
+  cancelJob(id) {
+    const j = this._jobs.get(id);
+    if (!j) return false;
+    if (j.status !== 'running' && j.status !== 'queued') return false;
+    j.status = 'cancelled';
+    j.completedAt = Date.now();
+    j.error = 'Cancelled by user';
+    // Kill underlying child process if any
+    if (j._childProcess && typeof j._childProcess.kill === 'function') {
+      try { j._childProcess.kill('SIGTERM'); } catch (_) {}
+    }
+    this._saveMeta(j);
+    this._broadcast(j, 'cancelled', { jobId: id, error: 'Cancelled by user' });
+    this._closeClients(j);
+    return true;
+  }
+
   /** Return up to `limit` recent jobs. */
   listJobs(limit = 100) {
     return Array.from(this._jobs.values())

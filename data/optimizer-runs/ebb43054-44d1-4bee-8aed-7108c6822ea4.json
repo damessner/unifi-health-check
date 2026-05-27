@@ -1,10 +1,10 @@
 {
-  "id": "1dbe4fa2-1911-44f1-8f82-6a409b70af8c",
+  "id": "ebb43054-44d1-4bee-8aed-7108c6822ea4",
   "status": "running",
   "params": {
     "maxChanges": 8,
     "minImprovementThreshold": 3,
-    "timeBudgetMs": 3000,
+    "timeBudgetMs": 1000,
     "generationLimit": 100000,
     "searchMode": "ga",
     "populationSize": 20,
@@ -14,7 +14,7 @@
     "convergenceWindow": 300,
     "convergenceThreshold": 0.5
   },
-  "createdAt": 1779863848468,
+  "createdAt": 1779867492123,
   "completedAt": null,
   "error": null,
   "resultPath": null,

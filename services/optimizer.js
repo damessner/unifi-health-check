@@ -832,6 +832,10 @@ async function runGeneticOptimizer(radios, channelSummary, aps, options = {}, on
   const minImprovementThreshold = clampInt(Number(options.minImprovementThreshold), 0, 100, MIN_IMPROVEMENT_THRESHOLD);
   const enforceMinImprovement = options.enforceMinImprovement === true;
   const searchMode = String(options.searchMode || 'ga').toLowerCase();
+  const jobId = options.jobId || null;
+
+  // Reference to module-level cancelled set for background job cancellation
+  const isCancelled = () => jobId && module.exports._cancelledJobIds?.has(jobId);
 
   const allAPs = Array.isArray(aps) ? aps : [];
   const proximityGraph = buildProximityGraph(allAPs);
@@ -951,6 +955,11 @@ async function runGeneticOptimizer(radios, channelSummary, aps, options = {}, on
   const REPORT_INTERVAL = Math.max(1, Math.round(populationSize * 0.4));
 
   while ((Date.now() - started) < timeBudgetMs && generations < generationLimit) {
+    // Check for cancellation (background job was cancelled by user)
+    if (isCancelled()) {
+      await sendProgress('cancelled');
+      break;
+    }
     generations++;
     const elapsedFrac = Math.min(1, (Date.now() - started) / timeBudgetMs);
     const coolingFactor = 1 - elapsedFrac; // 1 → 0 over the run
@@ -1045,16 +1054,22 @@ async function runGeneticOptimizer(radios, channelSummary, aps, options = {}, on
   }
 
   // ── Refinement phase: local search on best assignment ──
-  if (!convergedEarly) {
-    // If we didn't converge early, still try refinement in remaining time
-    await sendProgress('refining');
-  }
-  // Single refinement pass (all modes)
-  let refined = refineAssignment(bestAssignment, radios, channelSummary, maxChanges, proximityGraph);
-  let refinedEval = evaluateAssignment(radios, refined, channelSummary, maxChanges);
   let refinementAccepted = false;
-  let refinementPasses = 1;
-  if (refinedEval.pain < bestEval.pain) {
+  let refinementPasses = 0;
+
+  if (isCancelled()) {
+    await sendProgress('cancelled');
+    // Skip refinement entirely when cancelled
+  } else {
+    if (!convergedEarly) {
+      // If we didn't converge early, still try refinement in remaining time
+      await sendProgress('refining');
+    }
+    // Single refinement pass (all modes)
+    let refined = refineAssignment(bestAssignment, radios, channelSummary, maxChanges, proximityGraph);
+    let refinedEval = evaluateAssignment(radios, refined, channelSummary, maxChanges);
+    refinementPasses = 1;
+    if (refinedEval.pain < bestEval.pain) {
     bestAssignment = refined;
     bestEval = refinedEval;
     bestGeneration = generations + 1; // refinement counts as an extra gen
@@ -1076,11 +1091,14 @@ async function runGeneticOptimizer(radios, channelSummary, aps, options = {}, on
       }
       await sendProgress(`Refining pass ${pass + 2}...`);
     }
+    }
   }
 
   await sendProgress('finalizing');
 
   // ── Build final result ──
+  if (isCancelled()) return null;
+
   const result = assignmentToResult(bestAssignment, radios, channelSummary, aps, allAPs, proximityGraph, maxChanges, bestEval);
 
   const stopReason = convergedEarly

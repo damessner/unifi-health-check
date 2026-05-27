@@ -1952,10 +1952,16 @@ function renderOptimizerJobs(jobs) {
 
     const durSec = job.completedAt ? Math.max(1, Math.round((job.completedAt - job.createdAt) / 1000)) + 's' : '';
 
+    const canCancel = job.status === 'running' || job.status === 'queued';
+    const cancelBtn = canCancel
+      ? `<button class="btn-sm-cancel" onclick="cancelOptimizerJob('${job.id}', this)" title="Cancel this job">\u2715</button>`
+      : '';
+
     return `
       <div class="job-card" data-job-id="${job.id}">
         <div class="job-card-row">
           <span class="job-status">${statusBadge}</span>
+          ${cancelBtn}
           <span class="job-meta">
             ${escapeHtml(engineLabel)}
             <span class="text-muted" style="font-size:0.65rem;margin-left:4px;">${escapeHtml(date)}</span>
@@ -1989,12 +1995,16 @@ function reconnectToRunningJobs(jobs) {
     es.addEventListener('status', (e) => {
       try {
         const st = JSON.parse(e.data);
-        // Update the specific job card badge
         const card = document.querySelector(`.job-card[data-job-id="${job.id}"] .job-status`);
         if (card && st.progressCount > 0) {
           card.innerHTML = '<span class="badge badge-warn">Running</span>';
         }
       } catch (_) {}
+    });
+
+    es.addEventListener('cancelled', () => {
+      es.close();
+      loadOptimizerJobs();
     });
 
     es.addEventListener('complete', (e) => {
@@ -2028,6 +2038,28 @@ function saveLastJobId(jobId) {
   if (jobId) {
     try { localStorage.setItem('unifi_last_optimizer_job', jobId); } catch (_) {}
   }
+}
+
+/**
+ * Cancel a running/queued optimizer job.
+ * Called from the cancel button in the Background Jobs panel.
+ */
+async function cancelOptimizerJob(jobId, btnEl) {
+  if (!confirm('Cancel this optimization job? The current progress will be lost.')) return;
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = '...'; }
+  try {
+    const resp = await fetch(`/api/optimize/jobs/${jobId}`, { method: 'DELETE' });
+    const data = await resp.json();
+    if (data.success) {
+      showToast('Job cancelled.', 'info');
+      loadOptimizerJobs();
+    } else {
+      showToast(`Cancel failed: ${escapeHtml(data.error)}`, 'error');
+    }
+  } catch (err) {
+    showToast(`Cancel error: ${escapeHtml(err.message)}`, 'error');
+  }
+  if (btnEl) { btnEl.disabled = false; btnEl.textContent = '\u2715'; }
 }
 
 // ── GA Search Progress UI ────────────────────────────────────────────────────
@@ -2232,17 +2264,25 @@ async function runBatchOptimizer(forceRefresh = false) {
         resolve();
       });
 
-      es.addEventListener('error', () => {
-        if (esCompleted) return; // already handled complete
+      es.addEventListener('error', (e) => {
+        if (esCompleted) return;
         if (completeReceived) {
-          // Connection closed after complete — benign
           hideGaProgress();
           if (!payload) { resolve(); return; }
           return;
         }
-        es.close();
-        gaEventSource = null;
-        hideGaProgress();
+        // Check if server sent an error event (e.data is set)
+        if (e && e.data) {
+          try {
+            const errData = JSON.parse(e.data);
+            const errMsg = errData.error || 'Optimization failed';
+            es.close(); gaEventSource = null; hideGaProgress();
+            handleOptimizerError(errMsg, btn, rescanBtn);
+            reject(new Error(errMsg));
+            return;
+          } catch (_) {}
+        }
+        es.close(); gaEventSource = null; hideGaProgress();
         const errMsg = payload ? (payload.error || 'Connection lost') : 'SSE connection failed';
         handleOptimizerError(errMsg, btn, rescanBtn);
         reject(new Error(errMsg));
@@ -2418,8 +2458,25 @@ async function runDeepOptimizer() {
         resolve();
       });
 
-      es.addEventListener('error', () => {
+      es.addEventListener('error', (e) => {
         if (esCompleted) return;
+        // Check if server sent an error event
+        if (e && e.data) {
+          try {
+            const errData = JSON.parse(e.data);
+            const errMsg = errData.error || 'Deep optimization failed';
+            es.close(); gaEventSource = null; hideGaProgress();
+            setWorkflowStep('analyze', 'error');
+            updateBatchOptimizerDisplay(true, errMsg);
+            showToast(`Deep optimizer error: ${escapeHtml(errMsg)}`, 'error');
+            if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="moon" style="width:14px; height:14px;"></i> Overnight'; }
+            if (runBtn) runBtn.disabled = false;
+            if (rescanBtn) rescanBtn.disabled = false;
+            if (window.lucide) window.lucide.createIcons();
+            reject(new Error(errMsg));
+            return;
+          } catch (_) {}
+        }
         es.close();
         gaEventSource = null;
         hideGaProgress();

@@ -421,6 +421,14 @@ async function runJSEngine(jobId, params, deps) {
           convergenceThreshold, searchMode, minImprovementThreshold } = params;
   const { channelAnalysis, apsModel } = deps;
 
+  // Check if cancelled before starting
+  const rawJob = optimizerManager._jobs?.get(jobId);
+  if (rawJob && rawJob.status === 'cancelled') return;
+
+  // Register cancellation check with the optimizer
+  optimizer._cancelledJobIds = optimizer._cancelledJobIds || new Set();
+  optimizer._cancelledJobIds.add(jobId);
+
   const result = await optimizer.runGeneticOptimizer(
     channelAnalysis.radios,
     channelAnalysis.summary,
@@ -429,10 +437,16 @@ async function runJSEngine(jobId, params, deps) {
       maxChanges, minImprovementThreshold, enforceMinImprovement: true,
       timeBudgetMs, generationLimit, populationSize, mutationRate,
       eliteCount, stagnationLimit, convergenceWindow, convergenceThreshold,
-      searchMode,
+      searchMode, jobId, // pass jobId for cancellation checking
     },
     (progress) => { optimizerManager.addProgress(jobId, progress); },
   );
+
+  // Final cancellation check after completion
+  if (!result || optimizer._cancelledJobIds.has(jobId)) {
+    if (optimizer._cancelledJobIds) optimizer._cancelledJobIds.delete(jobId);
+    return; // Don't save result
+  }
 
   // Generate and save XLSX
   let xlsxPath = null;
@@ -479,6 +493,17 @@ async function runRustEngine(jobId, params, deps) {
   };
 
   const proc = require('child_process').spawn(rustBin, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+
+  // Store child process reference so cancellation can kill it
+  const rawJob = optimizerManager._jobs?.get(jobId);
+  if (rawJob) rawJob._childProcess = proc;
+
+  // Check if cancelled before Rust starts
+  if (rawJob && rawJob.status === 'cancelled') {
+    proc.kill('SIGTERM');
+    return;
+  }
+
   let completeData = null;
   let stdoutBuffer = '';
 
@@ -916,6 +941,23 @@ app.get('/api/optimize/jobs/:id/download/:format', (req, res) => {
 });
 
 /**
+ * DELETE /api/optimize/jobs/:id - Cancel a running/queued job.
+ *
+ * The underlying optimizer process (Rust child process or JS GA loop)
+ * will be stopped. The job status becomes 'cancelled'.
+ */
+app.delete('/api/optimize/jobs/:id', (req, res) => {
+  const cancelled = optimizerManager.cancelJob(req.params.id);
+  if (!cancelled) {
+    return res.status(404).json({ success: false, error: 'Job not found or already finished' });
+  }
+  // Also signal the JS GA cancellation set
+  const jobId = req.params.id;
+  if (optimizer._cancelledJobIds) optimizer._cancelledJobIds.add(jobId);
+  res.json({ success: true, message: 'Job cancelled' });
+});
+
+/**
  * POST /api/optimize/run - Create and start a new optimizer job.
  *
  * This is the preferred way to start an optimization from the UI.
@@ -936,6 +978,14 @@ app.post('/api/optimize/run', async (req, res) => {
     const stagnationLimit = Math.min(5000, Math.max(10, parseInt(req.body?.stagnationLimit, 10) || 200));
     const convergenceWindow = Math.min(2000, Math.max(20, parseInt(req.body?.convergenceWindow, 10) || 300));
     const convergenceThreshold = Math.min(10, Math.max(0.01, parseFloat(req.body?.convergenceThreshold) || 0.5));
+
+    // Concurrency: only one job per engine type at a time
+    if (optimizerManager.hasRunningJob(searchMode)) {
+      return res.status(409).json({
+        success: false,
+        error: `A ${searchMode} job is already running. Cancel it first or wait for it to complete.`,
+      });
+    }
 
     const job = optimizerManager.createJob({
       maxChanges, minImprovementThreshold, timeBudgetMs, generationLimit,
