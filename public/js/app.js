@@ -224,7 +224,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Optimizer tab buttons
   const elRunOpt = document.getElementById('btn-run-optimizer');
-  if (elRunOpt) elRunOpt.addEventListener('click', runBatchOptimizer);
+  if (elRunOpt) elRunOpt.addEventListener('click', async (e) => {
+    e.preventDefault();
+    try { await runBatchOptimizer(); } catch (_) { /* already handled */ }
+  });
 
   const elRescanOpt = document.getElementById('btn-rescan-reopt');
   if (elRescanOpt) elRescanOpt.addEventListener('click', rescanAndReoptimize);
@@ -234,7 +237,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Overnight optimizer button
   const elOvernight = document.getElementById('btn-overnight-optimizer');
-  if (elOvernight) elOvernight.addEventListener('click', runDeepOptimizer);
+  if (elOvernight) elOvernight.addEventListener('click', async (e) => {
+    e.preventDefault();
+    try { await runDeepOptimizer(); } catch (_) { /* already handled */ }
+  });
 
   // Batch history toggle header
   const elHistoryHeader = document.getElementById('opt-history-header');
@@ -2098,9 +2104,11 @@ function clearGaLog() {
 }
 
 /**
- * Run the constrained batch optimizer via the API.
- * Uses Server-Sent Events (SSE) for real-time progress when in GA mode,
- * or falls back to heuristic fetch for the fast path.
+ * Run the constrained batch optimizer as a background job.
+ *
+ * 1. POST /api/optimize/run  → creates a background job, returns jobId
+ * 2. SSE to /api/optimize/jobs/{jobId}/progress  → live progress
+ * 3. If page refreshes, reconnects to the same job via loadOptimizerJobs()
  */
 async function runBatchOptimizer(forceRefresh = false) {
   const btn = document.getElementById('btn-run-optimizer');
@@ -2110,133 +2118,131 @@ async function runBatchOptimizer(forceRefresh = false) {
   const searchMode = engineSelect ? engineSelect.value : 'ga';
 
   const engineProfiles = {
-    ga: {
-      label: 'GA (4 min)',
-      timeBudgetMs: 240000,
-      populationSize: 40,
-      generationLimit: 100000,
-      minImprovement: 5,
-      mutationRate: 0.25,
-      eliteCount: 4,
-      stagnationLimit: 200,
-      convergenceWindow: 300,
-      convergenceThreshold: 0.5,
-    },
-    deep: {
-      label: 'Deep (4h)',
-      timeBudgetMs: 14400000,
-      populationSize: 100,
-      generationLimit: 400000,
-      minImprovement: 3,
-      mutationRate: 0.2,
-      eliteCount: 8,
-      stagnationLimit: 500,
-      convergenceWindow: 600,
-      convergenceThreshold: 0.35,
-    },
-    rust: {
-      label: 'Rust',
-      timeBudgetMs: 240000,
-      populationSize: 60,
-      generationLimit: 150000,
-      minImprovement: 5,
-      mutationRate: 0.22,
-      eliteCount: 6,
-      stagnationLimit: 260,
-      convergenceWindow: 350,
-      convergenceThreshold: 0.45,
-    },
+    ga: { label: 'GA (4 min)', timeBudgetMs: 240000, populationSize: 40, generationLimit: 100000, minImprovement: 5, mutationRate: 0.25, eliteCount: 4, stagnationLimit: 200, convergenceWindow: 300, convergenceThreshold: 0.5 },
+    deep: { label: 'Deep (4h)', timeBudgetMs: 14400000, populationSize: 100, generationLimit: 400000, minImprovement: 3, mutationRate: 0.2, eliteCount: 8, stagnationLimit: 500, convergenceWindow: 600, convergenceThreshold: 0.35 },
+    rust: { label: 'Rust', timeBudgetMs: 240000, populationSize: 60, generationLimit: 150000, minImprovement: 5, mutationRate: 0.22, eliteCount: 6, stagnationLimit: 260, convergenceWindow: 350, convergenceThreshold: 0.45 },
   };
   const profile = engineProfiles[searchMode] || engineProfiles.ga;
-  const label = profile.label;
 
   if (btn) {
     btn.disabled = true;
-    btn.innerHTML = `<i data-lucide="loader" style="width:14px; height:14px; animation:spin 1s infinite linear;"></i> Optimizing (${label})...`;
+    btn.innerHTML = `<i data-lucide="loader" style="width:14px; height:14px; animation:spin 1s infinite linear;"></i> Optimizing (${profile.label})...`;
   }
   if (rescanBtn) rescanBtn.disabled = true;
 
   setWorkflowStep('analyze', 'active');
 
-  // Use SSE for GA mode with real-time progress
-  return new Promise((resolve, reject) => {
-    const params = new URLSearchParams({
-      maxChanges: String(maxChanges),
-      minImprovement: String(profile.minImprovement),
-      timeBudgetMs: String(profile.timeBudgetMs),
-      generationLimit: String(profile.generationLimit),
-      populationSize: String(profile.populationSize),
-      mutationRate: String(profile.mutationRate),
-      eliteCount: String(profile.eliteCount),
-      stagnationLimit: String(profile.stagnationLimit),
-      convergenceWindow: String(profile.convergenceWindow),
-      convergenceThreshold: String(profile.convergenceThreshold),
+  // Show GA progress panel
+  showGaProgress();
+  clearGaLog();
+  addGaLogEntry('Starting background job...', 'info');
+
+  let payload = null;
+  let jobId = null;
+  let completeReceived = false;
+
+  try {
+    // Step 1: POST to create a background job
+    const body = {
+      maxChanges: maxChanges,
       searchMode: searchMode,
-      force: forceRefresh ? 'true' : 'false',
-    });
-    const url = `/api/optimize/progress?${params.toString()}`;
+      minImprovement: profile.minImprovement,
+      timeBudgetMs: profile.timeBudgetMs,
+      generationLimit: profile.generationLimit,
+      populationSize: profile.populationSize,
+      mutationRate: profile.mutationRate,
+      eliteCount: profile.eliteCount,
+      stagnationLimit: profile.stagnationLimit,
+      convergenceWindow: profile.convergenceWindow,
+      convergenceThreshold: profile.convergenceThreshold,
+      force: forceRefresh,
+    };
 
-    // Show GA progress panel
-    showGaProgress();
-    clearGaLog();
-    addGaLogEntry('Connecting to optimizer engine...', 'info');
-
-    let payload = null;
-    gaEventSource = new EventSource(url);
-
-    gaEventSource.addEventListener('connected', (e) => {
-      const data = JSON.parse(e.data);
-      // Save jobId for reconnection after page refresh
-      if (data.jobId) saveLastJobId(data.jobId);
-      addGaLogEntry(`Connected. ${data.totalAPs} APs, ${data.totalRadios} radios, pop ${data.populationSize}.`, 'info');
-      addGaLogEntry(`Engine=${searchMode}, genLimit=${data.generationLimit || profile.generationLimit}, minImp=${data.minImprovementThreshold || profile.minImprovement}%`, 'info');
-      addGaLogEntry('Searching all channel combinations...', 'info');
+    const resp = await fetch('/api/optimize/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
     });
 
-    gaEventSource.addEventListener('progress', (e) => {
-      const p = JSON.parse(e.data);
-      updateGaProgressUI(p);
-    });
+    if (!resp.ok) throw new Error(`Failed to create job: ${resp.status}`);
+    const data = await resp.json();
+    if (!data.success || !data.jobId) throw new Error(data.error || 'No jobId returned');
+    jobId = data.jobId;
 
-    gaEventSource.addEventListener('complete', (e) => {
-      payload = JSON.parse(e.data);
-      gaEventSource.close();
-      gaEventSource = null;
-      hideGaProgress();
+    // Save for reconnection
+    saveLastJobId(jobId);
+    addGaLogEntry(`Job created: ${jobId.slice(0, 8)}...`, 'info');
 
-      if (!payload.success) {
-        setWorkflowStep('analyze', 'error');
-        updateBatchOptimizerDisplay(true, payload.error || 'Optimization failed');
-        showToast(`Optimizer error: ${escapeHtml(payload.error || 'Unknown error')}`, 'error');
-        if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="play" style="width:14px; height:14px;"></i> Run Optimizer'; }
-        if (rescanBtn) rescanBtn.disabled = false;
-        if (window.lucide) window.lucide.createIcons();
-        reject(new Error(payload.error || 'Optimization failed'));
-        return;
-      }
+    // Step 2: Open SSE to track progress
+    return new Promise((resolve, reject) => {
+      let esCompleted = false;
 
-      // Process completed result
-      processOptimizerResult(payload, maxChanges);
-      resolve();
-    });
+      const es = new EventSource(`/api/optimize/jobs/${jobId}/progress`);
 
-    gaEventSource.addEventListener('error', (e) => {
-      if (gaEventSource) {
-        gaEventSource.close();
+      gaEventSource = es; // allow cleanup
+
+      es.addEventListener('status', (e) => {
+        const st = JSON.parse(e.data);
+        addGaLogEntry(`Job status: ${st.status}, progress events: ${st.progressCount}`, 'info');
+      });
+
+      es.addEventListener('progress', (e) => {
+        const p = JSON.parse(e.data);
+        updateGaProgressUI(p);
+      });
+
+      es.addEventListener('complete', (e) => {
+        esCompleted = true;
+        completeReceived = true;
+        payload = JSON.parse(e.data);
+        es.close();
         gaEventSource = null;
-      }
-      hideGaProgress();
-      const errMsg = payload ? (payload.error || 'Connection lost during optimization') : 'SSE connection failed';
-      console.error('[Optimizer] SSE error:', errMsg);
-      showToast(`Optimizer error: ${escapeHtml(errMsg)}`, 'error');
-      setWorkflowStep('analyze', 'error');
-      updateBatchOptimizerDisplay(true, errMsg);
-      if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="play" style="width:14px; height:14px;"></i> Run Optimizer'; }
-      if (rescanBtn) rescanBtn.disabled = false;
-      if (window.lucide) window.lucide.createIcons();
-      reject(new Error(errMsg));
+        hideGaProgress();
+
+        if (!payload.success) {
+          handleOptimizerError(payload.error || 'Optimization failed', btn, rescanBtn);
+          reject(new Error(payload.error || 'Optimization failed'));
+          return;
+        }
+
+        processOptimizerResult(payload, maxChanges);
+        addGaLogEntry('Job completed successfully. Download links are now active in the Background Jobs panel.', 'success');
+        loadOptimizerJobs();
+        resolve();
+      });
+
+      es.addEventListener('error', () => {
+        if (esCompleted) return; // already handled complete
+        if (completeReceived) {
+          // Connection closed after complete — benign
+          hideGaProgress();
+          if (!payload) { resolve(); return; }
+          return;
+        }
+        es.close();
+        gaEventSource = null;
+        hideGaProgress();
+        const errMsg = payload ? (payload.error || 'Connection lost') : 'SSE connection failed';
+        handleOptimizerError(errMsg, btn, rescanBtn);
+        reject(new Error(errMsg));
+      });
     });
-  });
+  } catch (err) {
+    hideGaProgress();
+    handleOptimizerError(err.message, btn, rescanBtn);
+    throw err;
+  }
+}
+
+/** Shared helper for optimizer error cleanup. */
+function handleOptimizerError(errMsg, btn, rescanBtn) {
+  console.error('[Optimizer] Error:', errMsg);
+  showToast(`Optimizer error: ${escapeHtml(errMsg)}`, 'error');
+  setWorkflowStep('analyze', 'error');
+  updateBatchOptimizerDisplay(true, errMsg);
+  if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="play" style="width:14px; height:14px;"></i> Run Optimizer'; }
+  if (rescanBtn) rescanBtn.disabled = false;
+  if (window.lucide) window.lucide.createIcons();
 }
 
 /**
@@ -2299,6 +2305,7 @@ function processOptimizerResult(payload, maxChanges) {
 
 /**
  * Run the deep (overnight) optimizer — multi-hour GA search for maximum quality.
+ * Creates a background job via POST /api/optimize/run, then tracks via SSE.
  */
 async function runDeepOptimizer() {
   const btn = document.getElementById('btn-overnight-optimizer');
@@ -2323,82 +2330,99 @@ async function runDeepOptimizer() {
   if (rescanBtn) rescanBtn.disabled = true;
 
   setWorkflowStep('analyze', 'active');
+  showGaProgress();
+  clearGaLog();
+  addGaLogEntry('\u{1F680} Starting DEEP overnight background job...', 'info');
+  addGaLogEntry(`Population: ${populationSize} \u00B7 Search mode: multi-phase deep GA`, 'info');
+  addGaLogEntry(`Gen limit: ${generationLimit}, Min improvement: ${minImprovement}%`, 'info');
 
-  return new Promise((resolve, reject) => {
-    const params = new URLSearchParams({
-      maxChanges: String(maxChanges),
-      minImprovement: String(minImprovement),
-      timeBudgetMs: String(timeBudgetMs),
-      generationLimit: String(generationLimit),
-      populationSize: String(populationSize),
-      mutationRate: String(mutationRate),
-      eliteCount: String(eliteCount),
-      stagnationLimit: String(stagnationLimit),
-      convergenceWindow: String(convergenceWindow),
-      convergenceThreshold: String(convergenceThreshold),
-      searchMode: 'deep',
-      force: 'false',
+  try {
+    // Step 1: Create background job
+    const resp = await fetch('/api/optimize/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        maxChanges, searchMode: 'deep', minImprovement,
+        timeBudgetMs, generationLimit, populationSize,
+        mutationRate, eliteCount, stagnationLimit, convergenceWindow, convergenceThreshold,
+        force: false,
+      }),
     });
-    const url = `/api/optimize/progress?${params.toString()}`;
+    if (!resp.ok) throw new Error(`Job creation failed: ${resp.status}`);
+    const data = await resp.json();
+    if (!data.success || !data.jobId) throw new Error(data.error || 'No jobId returned');
+    const jobId = data.jobId;
+    saveLastJobId(jobId);
+    addGaLogEntry(`Deep job created: ${jobId.slice(0, 8)}...`, 'info');
 
-    showGaProgress();
-    clearGaLog();
-    addGaLogEntry('\u{1F680} Starting DEEP overnight optimization (4 hour search)...', 'info');
-    addGaLogEntry(`Population: ${populationSize} \u00B7 Search mode: multi-phase deep GA`, 'info');
-    addGaLogEntry(`Gen limit: ${generationLimit}, Min improvement: ${minImprovement}%`, 'info');
-    addGaLogEntry('The server will explore billions of channel combinations.', 'info');
+    // Step 2: SSE reconnect
+    return new Promise((resolve, reject) => {
+      let esCompleted = false;
 
-    let payload = null;
-    const es = new EventSource(url);
+      const es = new EventSource(`/api/optimize/jobs/${jobId}/progress`);
+      gaEventSource = es;
 
-    es.addEventListener('connected', (e) => {
-      const data = JSON.parse(e.data);
-      addGaLogEntry(`Connected. ${data.totalAPs} APs, ${data.totalRadios} radios.`, 'info');
-    });
+      es.addEventListener('progress', (e) => {
+        const p = JSON.parse(e.data);
+        updateGaProgressUI(p);
+      });
 
-    es.addEventListener('progress', (e) => {
-      const p = JSON.parse(e.data);
-      updateGaProgressUI(p);
-    });
+      es.addEventListener('complete', (e) => {
+        esCompleted = true;
+        const payload = JSON.parse(e.data);
+        es.close();
+        gaEventSource = null;
+        hideGaProgress();
 
-    es.addEventListener('complete', (e) => {
-      payload = JSON.parse(e.data);
-      es.close();
-      hideGaProgress();
+        if (!payload.success) {
+          const errMsg = payload.error || 'Deep optimization failed';
+          setWorkflowStep('analyze', 'error');
+          updateBatchOptimizerDisplay(true, errMsg);
+          showToast(`Deep optimizer error: ${escapeHtml(errMsg)}`, 'error');
+          if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="moon" style="width:14px; height:14px;"></i> Overnight'; }
+          if (runBtn) runBtn.disabled = false;
+          if (rescanBtn) rescanBtn.disabled = false;
+          if (window.lucide) window.lucide.createIcons();
+          reject(new Error(errMsg));
+          return;
+        }
 
-      if (!payload.success) {
-        setWorkflowStep('analyze', 'error');
-        updateBatchOptimizerDisplay(true, payload.error || 'Optimization failed');
-        showToast(`Deep optimizer error: ${escapeHtml(payload.error || 'Unknown error')}`, 'error');
+        addGaLogEntry('\u2705 Deep optimization complete!', 'success');
+        processOptimizerResult(payload, maxChanges);
+        loadOptimizerJobs();
         if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="moon" style="width:14px; height:14px;"></i> Overnight'; }
         if (runBtn) runBtn.disabled = false;
         if (rescanBtn) rescanBtn.disabled = false;
         if (window.lucide) window.lucide.createIcons();
-        reject(new Error(payload.error));
-        return;
-      }
+        resolve();
+      });
 
-      addGaLogEntry('\u2705 Deep optimization complete!', 'success');
-      processOptimizerResult(payload, maxChanges);
-
-      if (window.lucide) window.lucide.createIcons();
-      resolve();
+      es.addEventListener('error', () => {
+        if (esCompleted) return;
+        es.close();
+        gaEventSource = null;
+        hideGaProgress();
+        const errMsg = 'Deep SSE connection lost';
+        setWorkflowStep('analyze', 'error');
+        updateBatchOptimizerDisplay(true, errMsg);
+        showToast(`Deep optimizer error: ${escapeHtml(errMsg)}`, 'error');
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="moon" style="width:14px; height:14px;"></i> Overnight'; }
+        if (runBtn) runBtn.disabled = false;
+        if (rescanBtn) rescanBtn.disabled = false;
+        if (window.lucide) window.lucide.createIcons();
+        reject(new Error(errMsg));
+      });
     });
-
-    es.addEventListener('error', () => {
-      if (es) es.close();
-      hideGaProgress();
-      const errMsg = payload ? (payload.error || 'Connection lost') : 'SSE connection failed';
-      showToast(`Deep optimizer error: ${escapeHtml(errMsg)}`, 'error');
-      setWorkflowStep('analyze', 'error');
-      updateBatchOptimizerDisplay(true, errMsg);
-      if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="moon" style="width:14px; height:14px;"></i> Overnight'; }
-      if (runBtn) runBtn.disabled = false;
-      if (rescanBtn) rescanBtn.disabled = false;
-      if (window.lucide) window.lucide.createIcons();
-      reject(new Error(errMsg));
-    });
-  });
+  } catch (err) {
+    hideGaProgress();
+    setWorkflowStep('analyze', 'error');
+    showToast(`Deep optimizer error: ${escapeHtml(err.message)}`, 'error');
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="moon" style="width:14px; height:14px;"></i> Overnight'; }
+    if (runBtn) runBtn.disabled = false;
+    if (rescanBtn) rescanBtn.disabled = false;
+    if (window.lucide) window.lucide.createIcons();
+    throw err;
+  }
 }
 
 /**
