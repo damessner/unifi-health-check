@@ -1973,6 +1973,8 @@ function renderOptimizerJobs(jobs) {
 /**
  * Open SSE reconnect for any currently running/queued jobs.
  * This allows progress to be displayed even after page refresh.
+ * When a job completes, the result is processed so the dashboard
+ * shows the channel plan, changed APs, improvement report, etc.
  */
 function reconnectToRunningJobs(jobs) {
   // Tear down old connections
@@ -1983,13 +1985,32 @@ function reconnectToRunningJobs(jobs) {
   for (const job of running) {
     const es = new EventSource(`/api/optimize/jobs/${job.id}/progress`);
 
-    es.addEventListener('progress', () => {
-      // Progress event — just refresh the list periodically to show updated counts
+    // Update job card in the panel when progress arrives
+    es.addEventListener('status', (e) => {
+      try {
+        const st = JSON.parse(e.data);
+        // Update the specific job card badge
+        const card = document.querySelector(`.job-card[data-job-id="${job.id}"] .job-status`);
+        if (card && st.progressCount > 0) {
+          card.innerHTML = '<span class="badge badge-warn">Running</span>';
+        }
+      } catch (_) {}
     });
 
     es.addEventListener('complete', (e) => {
       es.close();
-      loadOptimizerJobs(); // Refresh to show completed state + download links
+      try {
+        const payload = JSON.parse(e.data);
+        if (payload && payload.success) {
+          // Process the result so the dashboard shows the plan, changed APs, etc.
+          const mc = job.params?.maxChanges || payload.batchSummary?.maxChanges || 8;
+          processOptimizerResult(payload, mc);
+        }
+      } catch (err) {
+        console.error('[Reconnect] Error processing completed job:', err);
+      }
+      // Refresh the jobs panel to show completed state + download links
+      loadOptimizerJobs();
     });
 
     es.addEventListener('error', () => {

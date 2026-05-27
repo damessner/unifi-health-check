@@ -1,0 +1,24 @@
+{
+  "id": "ffae2c9e-18a6-4db5-93e4-1688036920be",
+  "status": "running",
+  "params": {
+    "maxChanges": 8,
+    "minImprovementThreshold": 3,
+    "timeBudgetMs": 240000,
+    "generationLimit": 100000,
+    "searchMode": "ga",
+    "populationSize": 40,
+    "mutationRate": 0.25,
+    "eliteCount": 4,
+    "stagnationLimit": 200,
+    "convergenceWindow": 300,
+    "convergenceThreshold": 0.5
+  },
+  "createdAt": 1779865809787,
+  "completedAt": null,
+  "error": null,
+  "resultPath": null,
+  "xlsxPath": null,
+  "progressCount": 0,
+  "_hasResult": false
+}
