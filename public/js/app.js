@@ -250,6 +250,25 @@ document.addEventListener('DOMContentLoaded', () => {
   const elJobsHeader = document.getElementById('optimizer-jobs-header');
   if (elJobsHeader) elJobsHeader.addEventListener('click', toggleOptimizerJobs);
 
+  // Optimization job card clicks (delegated): cancel or watch progress
+  const jobsList = document.getElementById('optimizer-jobs-list');
+  if (jobsList) {
+    jobsList.addEventListener('click', (e) => {
+      // Cancel button
+      const cancelBtn = e.target.closest('[data-job-cancel]');
+      if (cancelBtn) {
+        e.stopPropagation();
+        cancelOptimizerJob(cancelBtn.dataset.jobCancel, cancelBtn);
+        return;
+      }
+      // Running job card — watch progress
+      const card = e.target.closest('.job-card-clickable');
+      if (card && card.dataset.jobId) {
+        watchJobProgress(card.dataset.jobId);
+      }
+    });
+  }
+
   // Blueprint action buttons
   const elSelectBatch = document.getElementById('btn-select-batch');
   if (elSelectBatch) elSelectBatch.addEventListener('click', selectAllBatchAPs);
@@ -1954,11 +1973,12 @@ function renderOptimizerJobs(jobs) {
 
     const canCancel = job.status === 'running' || job.status === 'queued';
     const cancelBtn = canCancel
-      ? `<button class="btn-sm-cancel" onclick="cancelOptimizerJob('${job.id}', this)" title="Cancel this job">\u2715</button>`
+      ? `<button class="btn-sm-cancel" data-job-cancel="${job.id}" title="Cancel this job">\u2715</button>`
       : '';
+    const clickableClass = canCancel ? ' job-card-clickable' : '';
 
     return `
-      <div class="job-card" data-job-id="${job.id}">
+      <div class="job-card${clickableClass}" data-job-id="${job.id}" data-job-engine="${escapeHtml(engineLabel)}">
         <div class="job-card-row">
           <span class="job-status">${statusBadge}</span>
           ${cancelBtn}
@@ -2060,6 +2080,90 @@ async function cancelOptimizerJob(jobId, btnEl) {
     showToast(`Cancel error: ${escapeHtml(err.message)}`, 'error');
   }
   if (btnEl) { btnEl.disabled = false; btnEl.textContent = '\u2715'; }
+  // If the cancelled job was being watched, close the GA panel
+  if (gaEventSource) {
+    const watchedId = gaEventSource.url?.split('/').pop();
+    if (watchedId === jobId) {
+      gaEventSource.close();
+      gaEventSource = null;
+      hideGaProgress();
+    }
+  }
+}
+
+/**
+ * Open the GA progress panel for a running background job.
+ * Click on a running job card in the Background Jobs panel to call this.
+ */
+function watchJobProgress(jobId) {
+  // Close any existing progress watcher
+  if (gaEventSource) { gaEventSource.close(); gaEventSource = null; }
+
+  showGaProgress();
+  clearGaLog();
+  addGaLogEntry('Reconnected to running job...', 'info');
+  addGaLogEntry(`Job: ${jobId.slice(0, 8)}...`, 'info');
+
+  let payload = null;
+  let completeReceived = false;
+
+  const es = new EventSource(`/api/optimize/jobs/${jobId}/progress`);
+  gaEventSource = es;
+
+  es.addEventListener('status', (e) => {
+    try {
+      const st = JSON.parse(e.data);
+      addGaLogEntry(`Status: ${st.status}, progress so far: ${st.progressCount} events`, 'info');
+    } catch (_) {}
+  });
+
+  es.addEventListener('progress', (e) => {
+    try {
+      const p = JSON.parse(e.data);
+      updateGaProgressUI(p);
+    } catch (_) {}
+  });
+
+  es.addEventListener('complete', (e) => {
+    completeReceived = true;
+    payload = JSON.parse(e.data);
+    es.close();
+    gaEventSource = null;
+    hideGaProgress();
+
+    if (payload && payload.success) {
+      const mc = payload.batchSummary?.maxChanges || 8;
+      processOptimizerResult(payload, mc);
+      addGaLogEntry('Job completed! Download links are active in Background Jobs panel.', 'success');
+      loadOptimizerJobs();
+    } else {
+      handleOptimizerError(payload?.error || 'Job completed with errors', null, null);
+    }
+  });
+
+  es.addEventListener('cancelled', () => {
+    es.close();
+    gaEventSource = null;
+    hideGaProgress();
+    addGaLogEntry('Job was cancelled by user.', 'error');
+    loadOptimizerJobs();
+  });
+
+  es.addEventListener('error', (e) => {
+    if (completeReceived) return;
+    // Server-sent error
+    if (e && e.data) {
+      try {
+        const errData = JSON.parse(e.data);
+        es.close(); gaEventSource = null; hideGaProgress();
+        addGaLogEntry(`Error: ${errData.error}`, 'error');
+        loadOptimizerJobs();
+        return;
+      } catch (_) {}
+    }
+    es.close(); gaEventSource = null; hideGaProgress();
+    loadOptimizerJobs();
+  });
 }
 
 // ── GA Search Progress UI ────────────────────────────────────────────────────

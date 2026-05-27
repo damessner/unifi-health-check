@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
 const { spawn } = require('child_process');
 const config = require('./config');
 const unifiClient = require('./services/unifiClient');
@@ -8,6 +9,35 @@ const analyzer = require('./services/analyzer');
 const xlsxExporter = require('./services/xlsxExporter');
 const optimizer = require('./services/optimizer');
 const optimizerManager = require('./services/optimizerManager');
+
+// ── Rust binary resolution ─────────────────────────────────────────
+
+/** Return the path to the Rust optimizer binary, or null if not found. */
+function getRustBinaryPath() {
+  const isWin = process.platform === 'win32';
+  const baseDir = path.join(__dirname, 'rust-optimizer', 'target', 'release');
+  const binName = isWin ? 'unifi-ga-optimizer.exe' : 'unifi-ga-optimizer';
+  const fullPath = path.join(baseDir, binName);
+  try {
+    if (fs.existsSync(fullPath)) {
+      // On Linux ensure execute permission
+      if (!isWin) {
+        try { fs.chmodSync(fullPath, 0o755); } catch (_) {}
+      }
+      return fullPath;
+    }
+  } catch (_) {}
+  // Fallback: try the other platform's name (exe → no exe and vice versa)
+  const altName = isWin ? 'unifi-ga-optimizer' : 'unifi-ga-optimizer.exe';
+  const altPath = path.join(baseDir, altName);
+  try {
+    if (fs.existsSync(altPath)) {
+      if (!isWin) { try { fs.chmodSync(altPath, 0o755); } catch (_) {} }
+      return altPath;
+    }
+  } catch (_) {}
+  return null;
+}
 
 const app = express();
 const PORT = config.server.port;
@@ -469,7 +499,13 @@ async function runRustEngine(jobId, params, deps) {
           mutationRate, eliteCount, stagnationLimit, convergenceWindow,
           convergenceThreshold, minImprovementThreshold } = params;
   const { channelAnalysis, apsModel } = deps;
-  const rustBin = path.join(__dirname, 'rust-optimizer', 'target', 'release', 'unifi-ga-optimizer.exe');
+
+  // Resolve Rust binary; return early if not available
+  const rustBin = getRustBinaryPath();
+  if (!rustBin) {
+    optimizerManager.failJob(jobId, 'Rust optimizer binary not found. On Linux, compile with: cd rust-optimizer && cargo build --release');
+    return;
+  }
 
   const input = {
     radios: channelAnalysis.radios.filter(r => r.channel != null).map(r => ({
@@ -688,7 +724,12 @@ app.get('/api/optimize/progress', async (req, res) => {
 
     if (searchMode === 'rust') {
       // ── Rust native optimizer ─────────────────────────────────────────────
-      const rustBin = path.join(__dirname, 'rust-optimizer', 'target', 'release', 'unifi-ga-optimizer.exe');
+      const rustBin = getRustBinaryPath();
+      if (!rustBin) {
+        sendEvent('error', { error: 'Rust optimizer binary not found. Run: cd rust-optimizer && cargo build --release' });
+        res.end();
+        return;
+      }
       const input = {
         radios: channelAnalysis.radios
           .filter(r => r.channel != null) // skip radios without a channel
