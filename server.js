@@ -477,9 +477,16 @@ async function runJSEngine(jobId, params, deps) {
   try {
     const diagData = { channels: channelAnalysis, clients: deps.clientAnalysis, aps: apsModel };
     const buffer = await xlsxExporter.generateXlsx(diagData, { maxChanges });
-    xlsxPath = path.join(__dirname, 'data', 'optimizer-runs', `${jobId}-report.xlsx`);
+    const xlsxDir = path.join(__dirname, 'data', 'optimizer-runs');
+    if (!require('fs').existsSync(xlsxDir)) {
+      require('fs').mkdirSync(xlsxDir, { recursive: true });
+    }
+    xlsxPath = path.join(xlsxDir, `${jobId}-report.xlsx`);
     require('fs').writeFileSync(xlsxPath, buffer);
-  } catch (e) { console.error('[Job] XLSX save error:', e.message); }
+  } catch (e) {
+    console.error('[Job] XLSX save error:', e.message);
+    console.error('[Job] XLSX save stack:', e.stack);
+  }
 
   optimizerManager.completeJob(jobId, result, xlsxPath);
 }
@@ -604,8 +611,12 @@ async function runRustEngine(jobId, params, deps) {
   try {
     const diagData = { channels: channelAnalysis, clients: deps.clientAnalysis, aps: apsModel };
     const buffer = await xlsxExporter.generateXlsx(diagData, { maxChanges });
-    xlsxPath = path.join(__dirname, 'data', 'optimizer-runs', `${jobId}-report.xlsx`);
-    require('fs').writeFileSync(xlsxPath, buffer);
+    const xlsxDir = path.join(__dirname, 'data', 'optimizer-runs');
+    if (!fs.existsSync(xlsxDir)) {
+      fs.mkdirSync(xlsxDir, { recursive: true });
+    }
+    xlsxPath = path.join(xlsxDir, `${jobId}-report.xlsx`);
+    fs.writeFileSync(xlsxPath, buffer);
   } catch (e) { console.error('[Job] XLSX save error:', e.message); }
 
   optimizerManager.completeJob(jobId, rustResult, xlsxPath);
@@ -707,11 +718,17 @@ app.get('/api/optimize/progress', async (req, res) => {
       try {
         const diagData = { channels: channelAnalysis, clients: clientAnalysis, aps: apsModel };
         const buffer = await xlsxExporter.generateXlsx(diagData, { maxChanges });
-        const xlsxPath = path.join(__dirname, 'data', 'optimizer-runs', `${jobId}-report.xlsx`);
-        require('fs').writeFileSync(xlsxPath, buffer);
+        const xlsxDir = path.join(__dirname, 'data', 'optimizer-runs');
+        if (!fs.existsSync(xlsxDir)) {
+          fs.mkdirSync(xlsxDir, { recursive: true });
+          console.log('[Job] Created XLSX directory:', xlsxDir);
+        }
+        const xlsxPath = path.join(xlsxDir, `${jobId}-report.xlsx`);
+        fs.writeFileSync(xlsxPath, buffer);
         return xlsxPath;
       } catch (e) {
         console.error('[Job] XLSX save failed:', e.message);
+        console.error('[Job] XLSX stack:', e.stack);
         return null;
       }
     };
