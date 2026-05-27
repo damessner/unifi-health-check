@@ -16,26 +16,21 @@ const optimizerManager = require('./services/optimizerManager');
 function getRustBinaryPath() {
   const isWin = process.platform === 'win32';
   const baseDir = path.join(__dirname, 'rust-optimizer', 'target', 'release');
-  const binName = isWin ? 'unifi-ga-optimizer.exe' : 'unifi-ga-optimizer';
-  const fullPath = path.join(baseDir, binName);
-  try {
-    if (fs.existsSync(fullPath)) {
-      // On Linux ensure execute permission
-      if (!isWin) {
-        try { fs.chmodSync(fullPath, 0o755); } catch (_) {}
+  // On Linux/Mac: only try the native binary (no .exe, Windows PE won't run)
+  // On Windows: try .exe first, then fallback to no-extension
+  const candidates = isWin
+    ? ['unifi-ga-optimizer.exe', 'unifi-ga-optimizer']
+    : ['unifi-ga-optimizer'];
+  
+  for (const name of candidates) {
+    const fullPath = path.join(baseDir, name);
+    try {
+      if (fs.existsSync(fullPath)) {
+        if (!isWin) { try { fs.chmodSync(fullPath, 0o755); } catch (_) {} }
+        return fullPath;
       }
-      return fullPath;
-    }
-  } catch (_) {}
-  // Fallback: try the other platform's name (exe → no exe and vice versa)
-  const altName = isWin ? 'unifi-ga-optimizer' : 'unifi-ga-optimizer.exe';
-  const altPath = path.join(baseDir, altName);
-  try {
-    if (fs.existsSync(altPath)) {
-      if (!isWin) { try { fs.chmodSync(altPath, 0o755); } catch (_) {} }
-      return altPath;
-    }
-  } catch (_) {}
+    } catch (_) {}
+  }
   return null;
 }
 
@@ -455,9 +450,8 @@ async function runJSEngine(jobId, params, deps) {
   const rawJob = optimizerManager._jobs?.get(jobId);
   if (rawJob && rawJob.status === 'cancelled') return;
 
-  // Register cancellation check with the optimizer
+  // Ensure the cancelledJobIds set exists (for cancellation checks inside GA)
   optimizer._cancelledJobIds = optimizer._cancelledJobIds || new Set();
-  optimizer._cancelledJobIds.add(jobId);
 
   const result = await optimizer.runGeneticOptimizer(
     channelAnalysis.radios,

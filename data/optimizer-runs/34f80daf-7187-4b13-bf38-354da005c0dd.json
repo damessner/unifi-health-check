@@ -1,10 +1,10 @@
 {
-  "id": "9f17af56-620a-4497-bd5d-b984d5ed374e",
-  "status": "cancelled",
+  "id": "34f80daf-7187-4b13-bf38-354da005c0dd",
+  "status": "running",
   "params": {
     "maxChanges": 8,
     "minImprovementThreshold": 3,
-    "timeBudgetMs": 10000,
+    "timeBudgetMs": 5000,
     "generationLimit": 100000,
     "searchMode": "ga",
     "populationSize": 20,
@@ -14,11 +14,11 @@
     "convergenceWindow": 300,
     "convergenceThreshold": 0.5
   },
-  "createdAt": 1779869033823,
-  "completedAt": 1779869034374,
-  "error": "Cancelled by user",
+  "createdAt": 1779869990665,
+  "completedAt": null,
+  "error": null,
   "resultPath": null,
   "xlsxPath": null,
-  "progressCount": 4,
+  "progressCount": 0,
   "_hasResult": false
 }
