@@ -478,14 +478,16 @@ async function runJSEngine(jobId, params, deps) {
     const diagData = { channels: channelAnalysis, clients: deps.clientAnalysis, aps: apsModel };
     const buffer = await xlsxExporter.generateXlsx(diagData, { maxChanges });
     const xlsxDir = path.join(__dirname, 'data', 'optimizer-runs');
-    if (!require('fs').existsSync(xlsxDir)) {
-      require('fs').mkdirSync(xlsxDir, { recursive: true });
+    if (!fs.existsSync(xlsxDir)) {
+      fs.mkdirSync(xlsxDir, { recursive: true });
     }
     xlsxPath = path.join(xlsxDir, `${jobId}-report.xlsx`);
-    require('fs').writeFileSync(xlsxPath, buffer);
+    fs.writeFileSync(xlsxPath, buffer);
+    // Store in-memory fallback
+    if (rawJob) rawJob._xlsxBuffer = buffer;
   } catch (e) {
     console.error('[Job] XLSX save error:', e.message);
-    console.error('[Job] XLSX save stack:', e.stack);
+    console.error('[Job] XLSX stack:', e.stack);
   }
 
   optimizerManager.completeJob(jobId, result, xlsxPath);
@@ -617,6 +619,7 @@ async function runRustEngine(jobId, params, deps) {
     }
     xlsxPath = path.join(xlsxDir, `${jobId}-report.xlsx`);
     fs.writeFileSync(xlsxPath, buffer);
+    if (rawJob) rawJob._xlsxBuffer = buffer;
   } catch (e) { console.error('[Job] XLSX save error:', e.message); }
 
   optimizerManager.completeJob(jobId, rustResult, xlsxPath);
@@ -725,6 +728,9 @@ app.get('/api/optimize/progress', async (req, res) => {
         }
         const xlsxPath = path.join(xlsxDir, `${jobId}-report.xlsx`);
         fs.writeFileSync(xlsxPath, buffer);
+        // Store in-memory fallback
+        const rj = optimizerManager._jobs ? optimizerManager._jobs.get(jobId) : null;
+        if (rj) rj._xlsxBuffer = buffer;
         return xlsxPath;
       } catch (e) {
         console.error('[Job] XLSX save failed:', e.message);
@@ -983,8 +989,17 @@ app.get('/api/optimize/jobs/:id/download/:format', (req, res) => {
 
   if (format === 'xlsx') {
     const xlsxPath = optimizerManager.getXlsxPath(jobId);
+    // First try the on-disk file
     if (xlsxPath && require('fs').existsSync(xlsxPath)) {
       return res.download(xlsxPath, `optimization-${jobId.slice(0, 8)}.xlsx`);
+    }
+    // Fallback: try to serve from in-memory buffer if XLSX was stored at generation time
+    const fullJob = optimizerManager._jobs ? optimizerManager._jobs.get(jobId) : null;
+    if (fullJob && fullJob._xlsxBuffer) {
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="optimization-${jobId.slice(0, 8)}.xlsx"`);
+      res.setHeader('Content-Length', fullJob._xlsxBuffer.length);
+      return res.send(fullJob._xlsxBuffer);
     }
     return res.status(404).json({ success: false, error: 'XLSX file not found for this job' });
   }
