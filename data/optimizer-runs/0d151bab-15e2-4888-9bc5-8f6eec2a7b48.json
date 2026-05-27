@@ -1,0 +1,24 @@
+{
+  "id": "0d151bab-15e2-4888-9bc5-8f6eec2a7b48",
+  "status": "completed",
+  "params": {
+    "maxChanges": 8,
+    "minImprovementThreshold": 5,
+    "timeBudgetMs": 2000,
+    "generationLimit": 100000,
+    "searchMode": "ga",
+    "populationSize": 20,
+    "mutationRate": 0.25,
+    "eliteCount": 2,
+    "stagnationLimit": 200,
+    "convergenceWindow": 300,
+    "convergenceThreshold": 0.5
+  },
+  "createdAt": 1779870591569,
+  "completedAt": 1779870594047,
+  "error": null,
+  "resultPath": "C:\\Users\\dames\\OneDrive - Mittelschule Telfs\\github\\unifi-health-check\\data\\optimizer-runs\\0d151bab-15e2-4888-9bc5-8f6eec2a7b48-result.json",
+  "xlsxPath": "C:\\Users\\dames\\OneDrive - Mittelschule Telfs\\github\\unifi-health-check\\data\\optimizer-runs\\0d151bab-15e2-4888-9bc5-8f6eec2a7b48-report.xlsx",
+  "progressCount": 21,
+  "_hasResult": true
+}
